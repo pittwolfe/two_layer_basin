@@ -6,7 +6,7 @@ import numpy as np
 import scipy as sp
 import numpy.linalg
 
-from chebfun import *
+from .chebfun import *
 
 class two_layer_model(object):
     def __init__(self, Ly, Nx, b, Ek, r, Lx=1, Ny=None, effective_bc=False,
