@@ -213,14 +213,14 @@ class two_layer_model(object):
         self.mmoc[-1] = 0
 
         # PV
+        self.ζ = apply_operator(self.Dx, self.v) - apply_operator(self.Dy, self.u)
         self.pv_form_drag = apply_operator(self.Dx, self.fKηx) + apply_operator(self.Dy, self.fKηy)
-        self.pv_visc = apply_operator(self.Dx, self.viscv) - apply_operator(self.Dy, self.viscu)
+        self.pv_visc = apply_operator(self.Ek*self.Δ, self.ζ)
 
 
 
     def interp_field1d(self, x, xi, fld):
-        from scipy.interpolate import interp1d
-        f = interp1d(x, fld, kind='cubic', assume_sorted=True)
+        f = sp.interpolate.PchipInterpolator(x, fld)
 
         return f(xi)
 
