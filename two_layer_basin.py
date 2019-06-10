@@ -12,7 +12,7 @@ from .chebfun import *
 
 class two_layer_model(object):
     def __init__(self, Ly, Nx, b, Ek, r, Lx=1, Ny=None, effective_bc=False,
-                    corner_bc_hack=True):
+                    corner_bc_hack=False):
         self.Lx = Lx
         self.Ly = Ly
         self.Nx = Nx
@@ -34,8 +34,8 @@ class two_layer_model(object):
 
 
     def init_grid(self):
-        self.dx, self.x = cheb(self.Nx, x1=0, x2=self.Lx)
-        self.dy, self.y = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2)
+        self.dx, self.dx2, self.x = cheb(self.Nx, x1=0, x2=self.Lx, calc_D2=True)
+        self.dy, self.dy2, self.y = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2, calc_D2=True)
 
         self.xx, self.yy = np.meshgrid(self.x, self.y)
         self.xx_flat = self.xx.flatten()
@@ -64,16 +64,13 @@ class two_layer_model(object):
         if self.operators_initialized and not reset:
             return
 
-        dx2 = self.dx@self.dx
-        dy2 = self.dy@self.dy
-
         self.Ix = identity(self.Nx+1)
         self.Iy = identity(self.Ny+1)
 
         self.Dx = kron(self.Iy, self.dx, format='csr')
         self.Dy = kron(self.dy, self.Ix, format='csr')
-        self.D2x = kron(self.Iy, dx2, format='csr')
-        self.D2y = kron(dy2, self.Ix, format='csr')
+        self.D2x = kron(self.Iy, self.dx2, format='csr')
+        self.D2y = kron(self.dy2, self.Ix, format='csr')
         self.Δ = self.D2x + self.D2y
 
         self.I = identity(self.N)
