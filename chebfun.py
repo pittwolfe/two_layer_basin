@@ -6,9 +6,11 @@ import numpy as np
 import scipy as sp
 from numpy import pi
 
-def cheb(N, x1=-1, x2=1, sparse=False):
+def cheb(N, x1=-1, x2=1, calc_D2=False):
     '''
     Compute Chebyshev differentiation matrix and grid. The grid runs from x1 to x2, which default to -1 and 1.
+
+    If calc_D2 is true, also calculates the second derivative matrix.
     '''
 
     if N == 0:
@@ -33,13 +35,21 @@ def cheb(N, x1=-1, x2=1, sparse=False):
     D -= np.diag(D.sum(axis=-1))
 
     xp = alpha + beta*x[::-1]
-    if sparse:
-        Dp = sp.sparse.csc_matrix(D[::-1,::-1]/beta)
+    Dp = D[::-1,::-1]/beta
+
+    if not calc_D2:
+        return Dp, xp
     else:
-        Dp = D[::-1,::-1]/beta
+        D2 = D@D
+        # correct diagonal enties as per Bayless et al. (1994)
+        idx = np.diag_indices_from(D2)
+        D2[idx] = 0
+        D2[idx] = -np.sum(D2, axis=1)
 
+        D2p = D2[::-1,::-1]/beta**2
 
-    return Dp, xp
+        return Dp, D2p, xp
+
 
 def chebyshev_transform(x, u):
     N = len(x) - 1
