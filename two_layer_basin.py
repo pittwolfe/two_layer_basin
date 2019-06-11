@@ -14,38 +14,44 @@ class TwoLayerBasin(object):
     r''''Two layer model
 
     '''
-    def __init__(self, Ly, Nx, b, Ek, r, Lx=1, Ny=None,
-                    corner_bc_hack=False, open_bc_south=False):
+    def __init__(self, Ly, Nx, b, Ek, r=None, Lx=1, Ny=None,
+                    corner_bc_hack=False):
         self.Lx = Lx
         self.Ly = Ly
-        self.Nx = Nx
         self.b = b
         self.Ek = Ek
-        self.r = r
         self.corner_bc_hack = corner_bc_hack
-        self.open_bc_south = open_bc_south
 
+        self.operators_initialized = False
+        self.boundary_conditions_initialized = False
+
+        self.init_grid(Nx, Ny)
+
+        if r is not None:
+            if isinstance(r, numpy.ndarray):
+                self.r = diags(r.flatten())
+            else:
+                self.r = diags(np.repeat(r, self.N))
+        else:
+            self.r = None
+
+
+    def init_grid(self, Nx, Ny):
+        self.Nx = Nx
         if Ny is None:
-            self.Ny = int(Ly*Nx/Lx)
+            self.Ny = int(self.Ly*Nx/self.Lx)
         else:
             self.Ny = Ny
 
         self.shape = (self.Ny+1, self.Nx+1)
+        self.N = np.prod(self.shape)
 
-        self.boundary_conditions_initialized = False
-        self.operators_initialized = False
-
-        self.init_grid()
-
-
-    def init_grid(self):
         self.x, self.dx, self.dx2 = cheb(self.Nx, x1=0, x2=self.Lx, calc_D2=True)
         self.y, self.dy, self.dy2 = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2, calc_D2=True)
 
         self.xx, self.yy = np.meshgrid(self.x, self.y)
         self.xx_flat = self.xx.flatten()
         self.yy_flat = self.yy.flatten()
-        self.N = len(self.yy_flat)
 
         self.boundary_mask_west  = np.zeros_like(self.xx, dtype=np.bool)
         self.boundary_mask_east  = np.zeros_like(self.xx, dtype=np.bool)
@@ -57,21 +63,27 @@ class TwoLayerBasin(object):
         self.boundary_mask_south[0, : ] = True
         self.boundary_mask_north[-1,: ] = True
 
-        self.boundary_mask = (self.boundary_mask_east | self.boundary_mask_west | self.boundary_mask_north)
-        if not self.open_bc_south:
-            self.boundary_mask = self.boundary_mask | self.boundary_mask_south
-
+        self.boundary_mask = (self.boundary_mask_east | self.boundary_mask_west |
+                             self.boundary_mask_north | self.boundary_mask_south)
 
         self.f = diags(1 + self.b*self.y)
 
 
-    def init_forcing(self, K, θ):
+    def init_forcing(self, K, θ, r=None):
         if isinstance(K, numpy.ndarray):
             self.K = diags(K.flatten())
         else:
             self.K = diags(np.repeat(K, self.N))
 
         self.θ = θ
+
+        if r is not None:
+            if isinstance(r, numpy.ndarray):
+                self.r = diags(r.flatten())
+            else:
+                self.r = diags(np.repeat(r, self.N))
+        elif self.r is None:
+                raise RuntimeError('Relaxation rate must be specific at initialization or in init_forcing')
 
 
     def init_operators(self, reset=False):
@@ -100,7 +112,7 @@ class TwoLayerBasin(object):
 
         self.op_Dxu = self.Dx.tolil(copy=True)
         self.op_Dyv = self.Dy.tolil(copy=True)
-        self.op_rIη = (-self.r*self.I).tolil(copy=True)
+        self.op_rIη = (-self.r).tolil(copy=True)
 
         self.operators_initialized = True
 
@@ -122,15 +134,6 @@ class TwoLayerBasin(object):
         self.op_pgfU[idx_bc,:] = 0
         self.op_pgfV[idx_bc,:] = 0
 
-        if self.open_bc_south:
-            idx_bc = self.boundary_mask_south.flatten()
-
-            self.op_viscV[idx_bc,:] = 0
-            self.op_coriV[idx_bc,:] = 0
-            self.op_coriV[idx_bc,idx_bc] = 1
-            self.op_pgfV[idx_bc,:] = 0
-            self.op_Dxu[idx_bc,:] = 0
-            self.op_Dyv[idx_bc,:] = 0
 
         θrhs = self.θ.copy().flatten()
 
@@ -140,10 +143,8 @@ class TwoLayerBasin(object):
             indices = np.reshape(np.arange(self.N), (self.Ny+1, self.Nx+1))
 
             # northern corners
-            idx_corners = (self.boundary_mask_north & (self.boundary_mask_west | self.boundary_mask_east)).flatten()
-            if not self.open_bc_south:
-                # southern corners
-                idx_corners = idx_corners | (self.boundary_mask_south & (self.boundary_mask_west | self.boundary_mask_east)).flatten()
+            idx_corners = ((self.boundary_mask_west | self.boundary_mask_east)
+                         & (self.boundary_mask_south | self.boundary_mask_north)).flatten()
 
             self.op_Dxu[idx_corners,:] = 0
             self.op_Dyv[idx_corners,:] = 0
@@ -158,16 +159,15 @@ class TwoLayerBasin(object):
             self.op_rIη[indices[-1,-1],indices[-2,-1]] = 1
             self.op_rIη[indices[-1,-1],indices[-1,-2]] = 1
 
-            if not self.open_bc_south:
-                # SW corner
-                self.op_rIη[indices[0,0],indices[0,0]] = -2
-                self.op_rIη[indices[0,0],indices[1,0]] = 1
-                self.op_rIη[indices[0,0],indices[0,1]] = 1
+            # SW corner
+            self.op_rIη[indices[0,0],indices[0,0]] = -2
+            self.op_rIη[indices[0,0],indices[1,0]] = 1
+            self.op_rIη[indices[0,0],indices[0,1]] = 1
 
-                # SE corner
-                self.op_rIη[indices[0,-1],indices[0,-1]] = -2
-                self.op_rIη[indices[0,-1],indices[1,-1]] = 1
-                self.op_rIη[indices[0,-1],indices[0,-2]] = 1
+            # SE corner
+            self.op_rIη[indices[0,-1],indices[0,-1]] = -2
+            self.op_rIη[indices[0,-1],indices[1,-1]] = 1
+            self.op_rIη[indices[0,-1],indices[0,-2]] = 1
 
             θrhs[idx_corners] = 0
 
@@ -222,7 +222,7 @@ class TwoLayerBasin(object):
         self.ubarx = apply_operator(self.Dx, self.ubar)
         self.vbary = apply_operator(self.Dy, self.vbar)
 
-        self.w = self.r*(self.η - self.θ)
+        self.w = apply_operator(self.r, self.η - self.θ)
         self.wbar = self.ubarx + self.vbary
 
         # ZOC
