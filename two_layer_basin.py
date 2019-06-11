@@ -14,21 +14,23 @@ class TwoLayerBasin(object):
     r''''Two layer model
 
     '''
-    def __init__(self, Ly, Nx, b, Ek, r, Lx=1, Ny=None, effective_bc=False,
-                    corner_bc_hack=False):
+    def __init__(self, Ly, Nx, b, Ek, r, Lx=1, Ny=None,
+                    corner_bc_hack=False, open_bc_south=False):
         self.Lx = Lx
         self.Ly = Ly
         self.Nx = Nx
         self.b = b
         self.Ek = Ek
         self.r = r
-        self.effective_bc = effective_bc
         self.corner_bc_hack = corner_bc_hack
+        self.open_bc_south = open_bc_south
 
         if Ny is None:
             self.Ny = int(Ly*Nx/Lx)
         else:
             self.Ny = Ny
+
+        self.shape = (self.Ny+1, self.Nx+1)
 
         self.boundary_conditions_initialized = False
         self.operators_initialized = False
@@ -45,11 +47,20 @@ class TwoLayerBasin(object):
         self.yy_flat = self.yy.flatten()
         self.N = len(self.yy_flat)
 
-        self.boundary_mask = np.zeros_like(self.xx)
-        self.boundary_mask[0, : ] = 1
-        self.boundary_mask[-1,: ] = 1
-        self.boundary_mask[: ,0 ] = 1
-        self.boundary_mask[: ,-1] = 1
+        self.boundary_mask_west  = np.zeros_like(self.xx, dtype=np.bool)
+        self.boundary_mask_east  = np.zeros_like(self.xx, dtype=np.bool)
+        self.boundary_mask_west[: ,0 ] = True
+        self.boundary_mask_east[: ,-1] = True
+
+        self.boundary_mask_south = np.zeros_like(self.xx, dtype=np.bool)
+        self.boundary_mask_north = np.zeros_like(self.xx, dtype=np.bool)
+        self.boundary_mask_south[0, : ] = True
+        self.boundary_mask_north[-1,: ] = True
+
+        self.boundary_mask = (self.boundary_mask_east | self.boundary_mask_west | self.boundary_mask_north)
+        if not self.open_bc_south:
+            self.boundary_mask = self.boundary_mask | self.boundary_mask_south
+
 
         self.f = diags(1 + self.b*self.y)
 
@@ -78,17 +89,18 @@ class TwoLayerBasin(object):
 
         self.I = identity(self.N)
 
-        self.visc = (self.Ek*self.Δ).tolil()
+        self.op_viscU = (self.Ek*self.Δ).tolil()
+        self.op_viscV = self.op_viscU.copy()
 
-        self.ηy = (-self.Dy - self.K@kron(self.f,         self.dx)).tolil()
-        self.ηx = ( self.Dx - self.K@kron(self.f@self.dy, self.Ix)).tolil()
+        self.op_pgfV = (-self.Dy - self.K@kron(self.f,         self.dx)).tolil()
+        self.op_pgfU = ( self.Dx - self.K@kron(self.f@self.dy, self.Ix)).tolil()
 
-        self.fu = kron(self.f, self.Ix, format='lil')
-        self.fv = self.fu.copy()
+        self.op_coriU = kron(self.f, self.Ix, format='lil')
+        self.op_coriV = self.op_coriU.copy()
 
-        self.Dxu = self.Dx.tolil(copy=True)
-        self.Dyv = self.Dy.tolil(copy=True)
-        self.rIη = (-self.r*self.I).tolil(copy=True)
+        self.op_Dxu = self.Dx.tolil(copy=True)
+        self.op_Dyv = self.Dy.tolil(copy=True)
+        self.op_rIη = (-self.r*self.I).tolil(copy=True)
 
         self.operators_initialized = True
 
@@ -98,15 +110,27 @@ class TwoLayerBasin(object):
         if self.boundary_conditions_initialized and not reset:
             return
 
-        idx_bc = self.boundary_mask.flatten() == 1
+        idx_bc = self.boundary_mask.flatten()
 
-        self.visc[idx_bc,:] = 0
-        self.fu[idx_bc,:] = 0
-        self.fu[idx_bc,idx_bc] = 1
-        self.fv[idx_bc,:] = 0
-        self.fv[idx_bc,idx_bc] = 1
-        self.ηy[idx_bc,:] = 0
-        self.ηx[idx_bc,:] = 0
+        # note that op_CoriU = fv and op_CoriV = fu
+        self.op_viscU[idx_bc,:] = 0
+        self.op_viscV[idx_bc,:] = 0
+        self.op_coriU[idx_bc,:] = 0
+        self.op_coriU[idx_bc,idx_bc] = 1
+        self.op_coriV[idx_bc,:] = 0
+        self.op_coriV[idx_bc,idx_bc] = 1
+        self.op_pgfU[idx_bc,:] = 0
+        self.op_pgfV[idx_bc,:] = 0
+
+        if self.open_bc_south:
+            idx_bc = self.boundary_mask_south.flatten()
+
+            self.op_viscV[idx_bc,:] = 0
+            self.op_coriV[idx_bc,:] = 0
+            self.op_coriV[idx_bc,idx_bc] = 1
+            self.op_pgfV[idx_bc,:] = 0
+            self.op_Dxu[idx_bc,:] = 0
+            self.op_Dyv[idx_bc,:] = 0
 
         θrhs = self.θ.copy().flatten()
 
@@ -115,30 +139,35 @@ class TwoLayerBasin(object):
             # the nearby boundary points
             indices = np.reshape(np.arange(self.N), (self.Ny+1, self.Nx+1))
 
-            idx_corners = (((self.xx_flat == 0) | (self.xx_flat == 1))
-                            & (np.abs(self.yy_flat) == self.Ly/2))
-            self.Dxu[idx_corners,:] = 0
-            self.Dyv[idx_corners,:] = 0
+            # northern corners
+            idx_corners = (self.boundary_mask_north & (self.boundary_mask_west | self.boundary_mask_east)).flatten()
+            if not self.open_bc_south:
+                # southern corners
+                idx_corners = idx_corners | (self.boundary_mask_south & (self.boundary_mask_west | self.boundary_mask_east)).flatten()
 
-            # SW corner
-            self.rIη[indices[0,0],indices[0,0]] = -2
-            self.rIη[indices[0,0],indices[1,0]] = 1
-            self.rIη[indices[0,0],indices[0,1]] = 1
+            self.op_Dxu[idx_corners,:] = 0
+            self.op_Dyv[idx_corners,:] = 0
 
             # NW corner
-            self.rIη[indices[-1,0],indices[-1,0]] = -2
-            self.rIη[indices[-1,0],indices[-2,0]] = 1
-            self.rIη[indices[-1,0],indices[-1,1]] = 1
-
-            # SE corner
-            self.rIη[indices[0,-1],indices[0,-1]] = -2
-            self.rIη[indices[0,-1],indices[1,-1]] = 1
-            self.rIη[indices[0,-1],indices[0,-2]] = 1
+            self.op_rIη[indices[-1,0],indices[-1,0]] = -2
+            self.op_rIη[indices[-1,0],indices[-2,0]] = 1
+            self.op_rIη[indices[-1,0],indices[-1,1]] = 1
 
             # NE corner
-            self.rIη[indices[-1,-1],indices[-1,-1]] = -2
-            self.rIη[indices[-1,-1],indices[-2,-1]] = 1
-            self.rIη[indices[-1,-1],indices[-1,-2]] = 1
+            self.op_rIη[indices[-1,-1],indices[-1,-1]] = -2
+            self.op_rIη[indices[-1,-1],indices[-2,-1]] = 1
+            self.op_rIη[indices[-1,-1],indices[-1,-2]] = 1
+
+            if not self.open_bc_south:
+                # SW corner
+                self.op_rIη[indices[0,0],indices[0,0]] = -2
+                self.op_rIη[indices[0,0],indices[1,0]] = 1
+                self.op_rIη[indices[0,0],indices[0,1]] = 1
+
+                # SE corner
+                self.op_rIη[indices[0,-1],indices[0,-1]] = -2
+                self.op_rIη[indices[0,-1],indices[1,-1]] = 1
+                self.op_rIη[indices[0,-1],indices[0,-2]] = 1
 
             θrhs[idx_corners] = 0
 
@@ -152,9 +181,9 @@ class TwoLayerBasin(object):
         self.init_boundary_conditions()
 
         L = sp.sparse.bmat([
-            [self.fu,   -self.visc,   self.ηy],
-            [self.visc,  self.fv,     self.ηx],
-            [self.Dxu,   self.Dyv,    self.rIη]
+            [self.op_coriV, -self.op_viscV,  self.op_pgfV],
+            [self.op_viscU,  self.op_coriU,  self.op_pgfU],
+            [self.op_Dxu,    self.op_Dyv,    self.op_rIη ]
         ], format='csr')
 
         # hack to get around 32 bit memory limit in umfpack
@@ -169,8 +198,8 @@ class TwoLayerBasin(object):
     def calc_derived_quantities(self):
         self.ustar = apply_operator(self.K@self.Dx, self.η)
         self.vstar = apply_operator(self.K@self.Dy, self.η)
-        self.ustar[self.boundary_mask == 1] = 0
-        self.vstar[self.boundary_mask == 1] = 0
+        self.ustar[self.boundary_mask] = 0
+        self.vstar[self.boundary_mask] = 0
 
         self.ubar = self.u - self.ustar
         self.vbar = self.v - self.vstar
@@ -184,8 +213,8 @@ class TwoLayerBasin(object):
         self.ηy = apply_operator(self.Dy, self.η)
         self.fKηx = apply_operator(self.K@kron(self.f, self.dx), self.η)
         self.fKηy = apply_operator(self.K@kron(self.f*self.dy, self.Ix), self.η)
-        self.fKηx[self.boundary_mask == 1] = 0
-        self.fKηy[self.boundary_mask == 1] = 0
+        self.fKηx[self.boundary_mask] = 0
+        self.fKηy[self.boundary_mask] = 0
 
         self.ux = apply_operator(self.Dx, self.u)
         self.vy = apply_operator(self.Dy, self.v)
