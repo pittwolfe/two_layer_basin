@@ -10,7 +10,10 @@ from scipy.sparse import kron, identity, diags
 
 from .chebfun import *
 
-class two_layer_model(object):
+class TwoLayerBasin(object):
+    r''''Two layer model
+
+    '''
     def __init__(self, Ly, Nx, b, Ek, r, Lx=1, Ny=None, effective_bc=False,
                     corner_bc_hack=False):
         self.Lx = Lx
@@ -34,8 +37,8 @@ class two_layer_model(object):
 
 
     def init_grid(self):
-        self.dx, self.dx2, self.x = cheb(self.Nx, x1=0, x2=self.Lx, calc_D2=True)
-        self.dy, self.dy2, self.y = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2, calc_D2=True)
+        self.x, self.dx, self.dx2 = cheb(self.Nx, x1=0, x2=self.Lx, calc_D2=True)
+        self.y, self.dy, self.dy2 = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2, calc_D2=True)
 
         self.xx, self.yy = np.meshgrid(self.x, self.y)
         self.xx_flat = self.xx.flatten()
