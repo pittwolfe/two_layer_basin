@@ -8,7 +8,7 @@ import numpy.linalg
 import scipy.sparse
 from scipy.sparse import kron, identity, diags
 
-from .chebfun import *
+from .chebfun import cheb, apply_operator, clenshaw_curtis_weight
 
 class TwoLayerBasin(object):
     r''''Two layer model
@@ -196,13 +196,31 @@ class TwoLayerBasin(object):
 
 
     def calc_derived_quantities(self):
+       # differential elements in x and y
+        dx = clenshaw_curtis_weight(self.Nx, x1=self.x[0], x2=self.x[-1])
+        dy = clenshaw_curtis_weight(self.Ny, x1=self.y[0], x2=self.y[-1])[:,np.newaxis]
+
+        self.w = apply_operator(self.r, self.η - self.θ)
+
         self.ustar = apply_operator(self.K@self.Dx, self.η)
         self.vstar = apply_operator(self.K@self.Dy, self.η)
+
+        self.ustarx = apply_operator(self.Dx, self.ustar)
+        self.vstary = apply_operator(self.Dy, self.vstar)
+
+        self.wstar = self.ustarx + self.vstary
+
         self.ustar[self.boundary_mask] = 0
         self.vstar[self.boundary_mask] = 0
 
+
         self.ubar = self.u - self.ustar
         self.vbar = self.v - self.vstar
+        self.wbar = self.w - self.wstar
+
+        self.ubarx = apply_operator(self.Dx, self.ubar)
+        self.vbary = apply_operator(self.Dy, self.vbar)
+
 
 
         self.viscu = apply_operator(self.Ek*self.Δ, self.u)
@@ -219,27 +237,21 @@ class TwoLayerBasin(object):
         self.ux = apply_operator(self.Dx, self.u)
         self.vy = apply_operator(self.Dy, self.v)
 
-        self.ubarx = apply_operator(self.Dx, self.ubar)
-        self.vbary = apply_operator(self.Dy, self.vbar)
 
-        self.w = apply_operator(self.r, self.η - self.θ)
-        self.wbar = self.ubarx + self.vbary
 
         # ZOC
-        self.w_yint    = integrate_in_y(np.reshape(self.w, (self.Ny+1, self.Nx+1)), self.dy)[-1,:]
-        self.wbar_yint = integrate_in_y(np.reshape(self.wbar, (self.Ny+1, self.Nx+1)), self.dy)[-1,:]
-        self.rzoc      = integrate_in_y(np.reshape(self.u, (self.Ny+1, self.Nx+1)), self.dy)[-1,:]
-        self.mzoc      = integrate_in_y(np.reshape(self.ubar, (self.Ny+1, self.Nx+1)), self.dy)[-1,:]
-        self.mzoc[ 0] = 0
-        self.mzoc[-1] = 0
+        self.w_yint    = np.sum(dy*self.w, axis=0)
+        self.wbar_yint = np.sum(dy*self.wbar, axis=0)
+        self.rzoc      = np.sum(dy*self.u, axis=0)
+        self.mzoc      = np.sum(dy*self.ubar, axis=0)
+
 
         # MOC
-        self.w_xint    = integrate_in_x(np.reshape(self.w, (self.Ny+1, self.Nx+1)), self.dx)[:,-1]
-        self.wbar_xint = integrate_in_x(np.reshape(self.wbar, (self.Ny+1, self.Nx+1)), self.dx)[:,-1]
-        self.rmoc = integrate_in_x(np.reshape(self.v, (self.Ny+1, self.Nx+1)), self.dx)[:,-1]
-        self.mmoc = integrate_in_x(np.reshape(self.vbar, (self.Ny+1, self.Nx+1)), self.dx)[:,-1]
-        self.mmoc[0] = 0
-        self.mmoc[-1] = 0
+        self.w_xint    = np.sum(dx*self.w, axis=1)
+        self.wbar_xint = np.sum(dx*self.wbar, axis=1)
+        self.rmoc      = np.sum(dx*self.v, axis=1)
+        self.mmoc =    = np.sum(dx*self.vbar, axis=1)
+
 
         # PV
         self.ζ = apply_operator(self.Dx, self.v) - apply_operator(self.Dy, self.u)

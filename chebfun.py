@@ -295,7 +295,7 @@ def inverse_transform_2d(v, ndct=None):
 
     return u
 
-def interp_1d(u, interp_fac):
+def interp_1d(u, interp_fac, x=None):
     r'''Interpolate onto a refined Chebyshev grid.
 
     Parameters
@@ -319,38 +319,92 @@ def interp_1d(u, interp_fac):
 
     '''
 
-    if interp_fac == 1:
-        return u
-    else:
-        return inverse_transform(transform(u), ndct=(len(u)-1)*interp_fac+1)
+    N = len(u)-1
 
+    if interp_fac == 1:
+        ui = u
+    else:
+        ui = inverse_transform(transform(u), ndct=N*interp_fac+1)
+
+    if x is not None:
+        return grid(N*interp_fac, x1=x[0], x2=x[-1]), ui
+    else:
+        return ui
+
+def clenshaw_curtis_weight(N, x1=-1, x2=1):
+    r'''Clenshaw Curtis integration weights
+
+    Notes
+    -----
+
+    From equations (A.48) and (A.49) in Payret (2002).
+
+    '''
+    ω = np.zeros(N+1)
+
+    if np.mod(N, 2) == 0: # N even
+        i = np.atleast_2d(np.arange(1,N)).T
+        k = np.atleast_2d(np.arange(N//2+1))
+
+        c = np.ones(N//2+1)
+        c[ 0] = 2
+        c[-1] = 2
+
+        ω[ 0] = 1/((N-1)*(N+1))
+        ω[-1] = 1/((N-1)*(N+1))
+
+        ω[1:-1] = (4/N)*(np.cos(2*pi*i*k/N)/c/((1-2*k)*(1+2*k))).sum(axis=-1)
+    else:
+        i = np.atleast_2d(np.arange(1,N)).T
+        k = np.atleast_2d(np.arange((N-1)//2+1))
+
+        c = np.ones((N-1)//2+1)
+        c[ 0] = 2
+        c[-1] = 2
+
+        ω[ 0] = 1/N**2
+        ω[-1] = 1/N**2
+
+        ω[1:-1] = (4/N)*(np.cos(2*pi*i*k/N)/c/((1-2*k)*(1+2*k))).sum(axis=-1) + (2*(-1)**i*np.cos(pi*i/N)/(N**2*(2-N))).flatten()
+
+    beta  = (x2 - x1)/2
+
+    return ω*beta
 
 def apply_operator(operator, fld):
     Ny, Nx = fld.shape
 
     return np.reshape(operator@fld.flatten(), (Ny, Nx))
 
-def cheb_int(fld, D):
-    FLD = sp.linalg.solve(D[1:,1:], fld.flatten()[1:])
+def cheb_int(fld, ω=None, x=None):
+    N = len(fld) - 1
 
-    return FLD
-
-def integrate_in_x(fld, D):
-
-    if fld.ndim == 1:
-        FLD = sp.linalg.solve(D[:-1,:-1], fld[:-1])
+    if x is None:
+        β = 1
     else:
-        FLD = sp.linalg.solve(D[1:,1:], fld[:,1:].T).T
+        β = (x[-1] - x[0])/2
 
-    return FLD
+    if ω is None:
+        ω = clenshaw_curtis_weight(N)
 
-def integrate_in_y(fld, D):
-    if fld.ndim == 1:
-        FLD = sp.linalg.solve(D[1:,1:], fld[1:])
-    else:
-        FLD = sp.linalg.solve(D[1:,1:], fld[1:,:])
+    return np.sum(ω*fld)
 
-    return FLD
+# def integrate_in_x(fld, D):
+#
+#     if fld.ndim == 1:
+#         FLD = sp.linalg.solve(D[:-1,1:], fld[1:])
+#     else:
+#         FLD = sp.linalg.solve(D[:-1,1:], fld[:,1:].T).T
+#
+#     return FLD
+#
+# def integrate_in_y(fld, D):
+#     if fld.ndim == 1:
+#         FLD = sp.linalg.solve(D[:-1,1:], fld[1:])
+#     else:
+#         FLD = sp.linalg.solve(D[:-1,1:], fld[1:,:])
+#
+#     return FLD
 
 def interp_field(fld):
     return interpn((y, x), fld,  (yyi, xxi), method='splinef2d')
