@@ -7,7 +7,27 @@ import scipy as sp
 from numpy import pi
 from scipy.fftpack import dct, dctn
 
-def grid(N, x1=-1, x2=1):
+def grid(N, type='E', x1=-1, x2=1):
+    r'''Generate a Chebyshev colocation grid.
+
+    Parameters
+    ----------
+    N : integer
+        Order of the Chebyshev grid.
+    type : one of {'E', 'R'}, optional
+        If `type` is 'E', the points are the extrema of the Chebyshev polynomial. If `type`
+        is `R`, the points are the roots.
+    x1 : float, optional
+        Leftmost point of the extremum grid.
+    x2 : float, optional
+        Rightmost point on the extremum grid. We require x2 > x1.
+
+    Returns
+    -------
+    x : numpy array
+        The desired grid with points in ascending order.
+
+    '''
     if N == 0:
         return 0
 
@@ -18,10 +38,191 @@ def grid(N, x1=-1, x2=1):
     alpha = (x2 + x1)/2
     beta  = (x2 - x1)/2
 
-    x = np.cos(pi*np.arange(N+1)/N)
-    xp = alpha + beta*x[::-1]
+    if type.upper() == 'E':
+        n = np.arange(N+1)
+        x = alpha - beta*np.cos(pi*n/N)
+    elif type.upper() == 'R':
+        n = np.arange(N)
+        x = alpha - beta*np.cos(pi*(n+1/2)/N)
+    else:
+        RuntimeError('Unknown grid type.')
 
-    return xp
+    return x
+
+def derivative_matrix(N, source_grid='E', target_grid='E', x1=-1, x2=-1, second_derivative=False):
+    r'''Compute Chebyshev differentiation matrix and grid.
+
+    Parameters
+    ----------
+    N : integer or array-like
+        If integer, order of the Chebyshev grid. If array, assumed to be extrema grid.
+        Grid is then inferred from input array and (x1, x2) are ignored.
+    source_grid : one of {'E', 'R'}, optional
+        Whether source grid is the extremum or root grid.
+    target_grid : one of {'E', 'R'}, optional
+        Whether target grid is the extremum or root grid.
+    x1 : float, optional
+        Physical location of the first grid point.
+    x2 : float, optional
+        Physical location of the last grid point.
+    second_derivative : bool, optional
+        If `True`, also return second order derivative matrix.
+
+    Returns
+    -------
+    D : 2D numpy array
+        First derivative matrix.
+    D2 : 2D numpy array
+        Second derivative matrix (only if `second_derivative` = `True` and only for the case
+        where the source and target grids are the extremum grids)
+
+    '''
+
+    # We build everything on the "natural" grid, then reverse and scale.
+    if not isinstance(N, int):
+        x1 = N[0]
+        x2 = N[-1]
+        N = len(N)-1
+
+    if N == 0:
+        return 0
+
+    if x1 >= x2:
+        raise RuntimeError('x1 must be less than x2')
+
+    # find the scaling parameters
+    alpha = (x2 + x1)/2
+    beta  = (x2 - x1)/2
+
+    if source_grid.upper() == 'E' and target_grid.upper() == 'E':
+        c = np.ones((1,N+1))
+        c[0, 0] = 2
+        c[0,-1] = 2
+        c *= (-1)**np.arange(N+1)
+
+        x = np.cos(pi*np.arange(N+1)/N)
+        X = np.repeat(x[:,np.newaxis], N+1, axis=-1)
+        dX = X - X.T
+        D = (c.T@(1/c))/(dX + np.identity(N+1))
+        D -= np.diag(D.sum(axis=-1))
+
+        if not second_derivative:
+            return D[::-1,::-1]/beta
+        else:
+            D2 = D@D
+            # correct diagonal enties as per Bayless et al. (1994)
+            idx = np.diag_indices_from(D2)
+            D2[idx] = 0
+            D2[idx] = -np.sum(D2, axis=1)
+
+            D2p = D2[::-1,::-1]/beta**2
+
+            return D[::-1,::-1]/beta, D2[::-1,::-1]/beta**2
+
+    elif source_grid.upper() == 'E' and target_grid.upper() == 'R':
+        i = np.atleast_2d(np.arange(N)).T # rows
+        j = np.atleast_2d(np.arange(N+1)) # columns
+
+        xe = np.cos(pi*j/N)         # extremum grid
+        xr = np.cos(pi*(i+1/2)/N)   # root grid
+
+        c = np.ones_like(j)
+        c[:, 0] = 2
+        c[:,-1] = 2
+
+        D = (-1)**(i+j)*(1 - xe*xr)/(N*c*np.sqrt(1 - xr**2)*(xe - xr)**2)
+
+        # correct diagonal enties as per Bayless et al. (1994)
+        idx = np.diag_indices_from(D[:,:-1])
+        D[idx] = 0
+        D[idx] = -np.sum(D, axis=1)
+
+        return D[::-1,::-1]/beta
+
+    elif source_grid.upper() == 'R' and target_grid.upper() == 'E':
+        i = np.atleast_2d(np.arange(1,N)).T # rows (boundaries handled as special cases
+        j = np.atleast_2d(np.arange(N)) # columns
+
+        xe = np.cos(pi*i/N)         # extremum grid
+        xr = np.cos(pi*(j+1/2)/N)   # root grid
+
+        D = np.zeros((N+1, N))
+        D[0,   :] = (-1)**j*np.sqrt(1-xr**2)*((1-xr)*N**2-1)/(N*(1-xr)**2)
+        D[1:-1,:] = (-1)**(i+j+1)*np.sqrt(1 - xr**2)/(N*(xe - xr)**2)
+        D[-1,  :] = (-1)**(N+j)*np.sqrt(1-xr**2)*((1+xr)*N**2-1)/(N*(1+xr)**2)
+
+        # correct diagonal enties as per Bayless et al. (1994)
+        idx = np.diag_indices_from(D[:-1,:])
+        D[idx] = 0
+        D[idx] = -np.sum(D[:-1,:], axis=1)
+
+        D[-1,-1] = 0
+        D[-1,-1] = -np.sum(D[-1,:])
+
+        return D[::-1,::-1]/beta
+
+    else:
+        raise RuntimeError('unknown or unimplmented combination of source and target grids')
+
+
+def projection_matrix(N, source_grid='E', target_grid='E'):
+    r'''Compute Chebyshev differentiation matrix and grid.
+
+    Parameters
+    ----------
+    N : integer
+        Order of the Chebyshev grid.
+    source_grid : one of {'E', 'R'}, optional
+        Whether source grid is the extremum or root grid.
+    target_grid : one of {'E', 'R'}, optional
+        Whether target grid is the extremum or root grid.
+
+    Returns
+    -------
+    P : 2D numpy array
+        Projection matrix.
+
+    '''
+
+    # We build everything on the "natural" grid, then reverse and scale.
+    if N == 0:
+        return 0
+
+    if source_grid.upper() == 'E' and target_grid.upper() == 'E':
+        return np.identity(N+1)
+
+    elif source_grid.upper() == 'R' and target_grid.upper() == 'R':
+        return np.identity(N)
+
+    elif source_grid.upper() == 'E' and target_grid.upper() == 'R':
+        i = np.atleast_2d(np.arange(N)).T # rows
+        j = np.atleast_2d(np.arange(N+1)) # columns
+
+        xj = np.cos(pi*j/N)         # extremum grid
+        xi = np.cos(pi*(i+1/2)/N)   # root grid
+
+        c = np.ones_like(j)
+        c[:, 0] = 2
+        c[:,-1] = 2
+
+        P = (-1)**(i+j+1)*np.sqrt(1-xi**2)/(c*N*(xi-xj))
+
+        return P[::-1,::-1]
+
+    elif source_grid.upper() == 'R' and target_grid.upper() == 'E':
+        i = np.atleast_2d(np.arange(N+1)).T # rows (boundaries handled as special cases)
+        j = np.atleast_2d(np.arange(N)) # columns
+
+        xi = np.cos(pi*i/N)         # extremum grid
+        xj = np.cos(pi*(j+1/2)/N)   # root grid
+
+        P = (-1)**(i+j)*np.sqrt(1-xj**2)/(N*(xi - xj))
+
+        return P[::-1,::-1]
+
+    else:
+        raise RuntimeError('unknown or unimplmented combination of source and target grids')
+
 
 def cheb(N, x1=-1, x2=1, calc_D2=False):
     r'''Compute Chebyshev differentiation matrix and grid.
@@ -29,7 +230,7 @@ def cheb(N, x1=-1, x2=1, calc_D2=False):
     Parameters
     ----------
     N : integer
-        Order of the Chebeshev grid.
+        Order of the Chebyshev grid.
     x1 : float, optional
         Physical location of the first grid point.
     x2 : float, optional
@@ -165,13 +366,15 @@ def inverse_transform(v, ndct=None):
 
     return u
 
-def transform_2d(u):
+def transform_2d(u, type='E'):
     r'''2D discrete Chebyshev transform.
 
     Parameters
     ----------
     u : 2D array
         Values at the :math:`M+1 \times N+1` Chebyshev points.
+    type : one of {'E', 'R'}
+        Specifies whether the input field is on extremal ('E') or root ('R') points.
 
     Returns
     -------
@@ -182,7 +385,7 @@ def transform_2d(u):
     Notes
     -----
 
-    The discrete Chebyshev transform is given by
+    The discrete Chebyshev transform of a function defined on extremal points is given by
 
     .. math::
         v_{kl} = \frac{4}{MN c_k c_j} \sum_{i=0}^M\sum_{j=0}^N \frac{u_{ij}}{c_ic_j}\cos\frac{k\pi i}{M}\cos\frac{l\pi j}{N}
@@ -191,17 +394,28 @@ def transform_2d(u):
     is implmented using the type I discrete cosine transform.
 
     '''
-    N = u.shape[0]-1
-    M = u.shape[1]-1
+    if type.upper() == 'E':
+        N = u.shape[0]-1
+        M = u.shape[1]-1
 
-    v = dctn(u, type=1, norm=None)
+        v = dctn(u, type=1, norm=None)
 
-    # apply the scaling
-    v     /= (M*N)
-    v[ 0,:] /= 2
-    v[-1,:] /= 2
-    v[:, 0] /= 2
-    v[:,-1] /= 2
+        # apply the scaling
+        v     /= (M*N)
+        v[ 0,:] /= 2
+        v[-1,:] /= 2
+        v[:, 0] /= 2
+        v[:,-1] /= 2
+
+    else:
+        N = u.shape[0]
+        M = u.shape[1]
+
+        v = dctn(u, type=2, norm=None)
+        # apply the scaling
+        v     /= (M*N)
+        v[ 0,:] /= 2
+        v[:, 0] /= 2
 
     return v
 
