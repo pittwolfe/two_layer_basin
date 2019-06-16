@@ -49,17 +49,17 @@ class TwoLayerBasin(object):
         self.x, self.dx, self.dx2 = cheb(self.Nx, x1=0, x2=self.Lx, calc_D2=True)
         self.y, self.dy, self.dy2 = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2, calc_D2=True)
 
-        self.xx, self.yy = np.meshgrid(self.x, self.y)
-        self.xx_flat = self.xx.flatten()
-        self.yy_flat = self.yy.flatten()
+        self.X, self.Y = np.meshgrid(self.x, self.y)
+        self.X_flat = self.X.flatten()
+        self.Y_flat = self.Y.flatten()
 
-        self.boundary_mask_west  = np.zeros_like(self.xx, dtype=np.bool)
-        self.boundary_mask_east  = np.zeros_like(self.xx, dtype=np.bool)
+        self.boundary_mask_west  = np.zeros_like(self.X, dtype=np.bool)
+        self.boundary_mask_east  = np.zeros_like(self.X, dtype=np.bool)
         self.boundary_mask_west[: ,0 ] = True
         self.boundary_mask_east[: ,-1] = True
 
-        self.boundary_mask_south = np.zeros_like(self.xx, dtype=np.bool)
-        self.boundary_mask_north = np.zeros_like(self.xx, dtype=np.bool)
+        self.boundary_mask_south = np.zeros_like(self.X, dtype=np.bool)
+        self.boundary_mask_north = np.zeros_like(self.X, dtype=np.bool)
         self.boundary_mask_south[0, : ] = True
         self.boundary_mask_north[-1,: ] = True
 
@@ -204,22 +204,22 @@ class TwoLayerBasin(object):
 
         self.ustar = apply_operator(self.K@self.Dx, self.η)
         self.vstar = apply_operator(self.K@self.Dy, self.η)
+        
+        self.ustar[self.boundary_mask] = 0
+        self.vstar[self.boundary_mask] = 0
+
 
         self.ustarx = apply_operator(self.Dx, self.ustar)
         self.vstary = apply_operator(self.Dy, self.vstar)
 
         self.wstar = self.ustarx + self.vstary
 
-        self.ustar[self.boundary_mask] = 0
-        self.vstar[self.boundary_mask] = 0
-
-
         self.ubar = self.u - self.ustar
         self.vbar = self.v - self.vstar
-        self.wbar = self.w - self.wstar
 
         self.ubarx = apply_operator(self.Dx, self.ubar)
         self.vbary = apply_operator(self.Dy, self.vbar)
+        self.wbar = self.ubarx + self.vbary
 
 
 
@@ -266,9 +266,9 @@ class TwoLayerBasin(object):
         return f(xi)
 
 
-    def interp_field2d(self, xxi, yyi, fld):
+    def interp_field2d(self, Xi, Yi, fld):
         from scipy.interpolate import interpn
-        return interpn((self.y, self.x), fld,  (yyi, xxi), method='splinef2d')
+        return interpn((self.y, self.x), fld,  (Yi, Xi), method='splinef2d')
 
 
     def interp_grid_1d(self, NXi, NYi=None):
@@ -293,17 +293,17 @@ class TwoLayerBasin(object):
 #         self.xi = np.linspace(0, self.Lx, NXi)
 #         self.yi = np.linspace(-self.Ly/2, self.Ly/2, NYi)
 #
-#         xxi, yyi = np.meshgrid(self.xi, self.yi)
+#         Xi, Yi = np.meshgrid(self.xi, self.yi)
 #
-#         self.ηi     = self.interp_field2d(xxi, yyi, self.η)
-#         self.ui     = self.interp_field2d(xxi, yyi, self.u)
-#         self.vi     = self.interp_field2d(xxi, yyi, self.v)
-#         self.wi     = self.interp_field2d(xxi, yyi, self.w)
-#         self.ubari  = self.interp_field2d(xxi, yyi, self.ubar)
-#         self.vbari  = self.interp_field2d(xxi, yyi, self.vbar)
-#         self.wbari  = self.interp_field2d(xxi, yyi, self.wbar)
-#         self.ustari = self.interp_field2d(xxi, yyi, self.ustar)
-#         self.vstari = self.interp_field2d(xxi, yyi, self.vstar)
+#         self.ηi     = self.interp_field2d(Xi, Yi, self.η)
+#         self.ui     = self.interp_field2d(Xi, Yi, self.u)
+#         self.vi     = self.interp_field2d(Xi, Yi, self.v)
+#         self.wi     = self.interp_field2d(Xi, Yi, self.w)
+#         self.ubari  = self.interp_field2d(Xi, Yi, self.ubar)
+#         self.vbari  = self.interp_field2d(Xi, Yi, self.vbar)
+#         self.wbari  = self.interp_field2d(Xi, Yi, self.wbar)
+#         self.ustari = self.interp_field2d(Xi, Yi, self.ustar)
+#         self.vstari = self.interp_field2d(Xi, Yi, self.vstar)
 #
 #         self.w_yinti = self.interp_field1d(self.x, self.xi, self.w_yint)
 #         self.wbar_yinti = self.interp_field1d(self.x, self.xi, self.wbar_yint)
@@ -315,5 +315,5 @@ class TwoLayerBasin(object):
 #         self.rmoci = self.interp_field1d(self.y, self.yi, self.rmoc)
 #         self.mmoci = self.interp_field1d(self.y, self.yi, self.mmoc)
 #
-#         self.xxi = xxi
-#         self.yyi = yyi
+#         self.Xi = Xi
+#         self.Yi = Yi
