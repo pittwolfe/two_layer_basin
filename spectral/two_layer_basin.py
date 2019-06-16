@@ -250,7 +250,7 @@ class TwoLayerBasin(object):
         self.w_xint    = np.sum(dx*self.w, axis=1)
         self.wbar_xint = np.sum(dx*self.wbar, axis=1)
         self.rmoc      = np.sum(dx*self.v, axis=1)
-        self.mmoc =    = np.sum(dx*self.vbar, axis=1)
+        self.mmoc      = np.sum(dx*self.vbar, axis=1)
 
 
         # PV
