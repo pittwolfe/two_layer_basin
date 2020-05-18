@@ -23,7 +23,7 @@ print(spectral)
 # -- Project information -----------------------------------------------------
 
 project = 'Chebyshev Spectral Models'
-copyright = '2019, Christopher L. Pitt Wolfe'
+copyright = '2020, Christopher L. Pitt Wolfe'
 author = 'Christopher L. Pitt Wolfe'
 
 # The full version, including alpha/beta/rc tags

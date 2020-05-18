@@ -11,7 +11,50 @@ from scipy.sparse import kron, identity, diags
 from .chebfun import cheb, apply_operator, clenshaw_curtis_weight
 
 class TwoLayerBasin(object):
-    r''''Two layer model
+    r'''A spectral model that solves the steady, linear two layer fluid equations
+
+    Solves the equations
+
+    .. math::
+        -f v &= \eta_x - K f \eta_y + \text{Ek}\, \nabla^2 u \\
+         f u &= \eta_y + K f \eta_x + \text{Ek}\, \nabla^2 v \\
+         u_x + v_y &= r(\eta - \theta)
+
+    with no-slip boundary conditions using Chebshev colocation.
+
+    Parameters
+    ----------
+    Lx : float, optional
+        Nondimensional zonal extend of domain. Default: 1
+    Ly : float
+        Nondimensional meridional extend of domain
+    Nx : int
+        Number of colocation points in zonal direction is Nx+1 (including boundary points)
+    Ny : int, optional
+        Number of colocation points in meridional direction is Ny+1 (including boundary points).
+        Default: Ly*Nx/Lx
+    b : float
+        beta parameter
+    Ek : float
+        Ekman number
+    r : float or 2D ndarry, optional
+        Relaxation timescale; spatially variable if a 2D array. If not specified at initialization,
+        can be specified by calling `init_forcing`.
+
+    Attributes
+    ----------
+    x : Nx + 1 ndarray
+        Zonal colocation grid.
+    y : Ny + 1 ndarray
+        Meridional colocation grid.
+    X, Y : (Ny + 1) by (Nx + 1) ndarrays
+        Kronecker products of the colocation grids.
+    u : (Ny + 1) by (Nx + 1) ndarray
+        Residual zonal velocity at colocation points. Available after call to :meth:`~two_layer_basin.TwoLayerBasin.solve`.
+    v : (Ny + 1) by (Nx + 1) ndarray
+        Residual meridional velocity at colocation points. Available after call to :meth:`~two_layer_basin.TwoLayerBasin.solve`.
+    η : (Ny + 1) by (Nx + 1) ndarray
+        Interface height at colocation points. Available after call to :meth:`~two_layer_basin.TwoLayerBasin.solve`.
 
     '''
     def __init__(self, Ly, Nx, b, Ek, r=None, Lx=1, Ny=None,
@@ -37,6 +80,21 @@ class TwoLayerBasin(object):
 
 
     def init_grid(self, Nx, Ny):
+        r'''Initialize the grid.
+
+        Intializes grid and first and second derivative matrices with calls to :func:`~chebfun.cheb`.
+        Sets up logical arrays which are `True` on each of the boundaries and `False`
+        everywhere else.
+        Defines the array of Coriolis parameter values.
+
+        Parameters
+        ----------
+        Nx : int
+            Number of colocation points in zonal direction is Nx+1 (including boundary points)
+        Ny : int
+            Number of colocation points in meridional direction is Ny+1 (including boundary points).
+
+        '''
         self.Nx = Nx
         if Ny is None:
             self.Ny = int(self.Ly*Nx/self.Lx)
@@ -70,6 +128,17 @@ class TwoLayerBasin(object):
 
 
     def init_forcing(self, K, θ, r=None):
+        r'''Intitialize the forcing.
+
+        Parameters
+        ----------
+        K : float or 2D array
+            Nondimensional diffusivities; spacially variable if a 2D array.
+        θ : 2D array
+            Relaxation target for η
+        r : float or 2D arry, optional
+            Relaxation timescale; spatially variable if a 2D array. Can be specified at initialization.
+        '''
         if isinstance(K, numpy.ndarray):
             self.K = diags(K.flatten())
         else:
@@ -83,10 +152,22 @@ class TwoLayerBasin(object):
             else:
                 self.r = diags(np.repeat(r, self.N))
         elif self.r is None:
-                raise RuntimeError('Relaxation rate must be specific at initialization or in init_forcing')
+                raise RuntimeError('Relaxation rate must be specified at initialization or in init_forcing')
 
 
     def init_operators(self, reset=False):
+        r'''Initialize derivative operators.
+
+        Parameters
+        ----------
+        reset : bool
+            Recalculate operators if `True`
+
+        Notes
+        -----
+        Initializing the operators is expensive. If called more than once with `reset = False`
+        the operators are only initialized on the first call.
+        '''
         if self.operators_initialized and not reset:
             return
 
@@ -117,6 +198,17 @@ class TwoLayerBasin(object):
         self.operators_initialized = True
 
     def init_boundary_conditions(self, reset=False):
+        r'''Initialize boundary conditions.
+
+        Parameters
+        ----------
+        reset : bool
+            Reinitialize boundary conditions if `True`
+
+        Notes
+        -----
+        Calling more than once with `reset = False` has no additional effect.
+        '''
         # setup boundary conditions
 
         if self.boundary_conditions_initialized and not reset:
@@ -177,6 +269,11 @@ class TwoLayerBasin(object):
         self.boundary_conditions_initialized = True
 
     def solve(self):
+        r'''Solve the linear system
+
+        Sets up operators and boundary conditions then solves the resulting sparse-ish linear
+        system using the umfpack implementation of :func:`~scipy.sparse.linalg.spsolve`.
+        '''
         self.init_operators()
         self.init_boundary_conditions()
 
@@ -196,6 +293,49 @@ class TwoLayerBasin(object):
 
 
     def calc_derived_quantities(self):
+        r'''Calculate quantities derived from u, v, and η
+
+        These are stored as attributes to the model and include
+
+        Attributes
+        ----------
+        w, wbar, wstar: (Ny + 1) by (Nx + 1) ndarray
+           Residual, mean, and eddy vertical velocity at colocation points.
+        ubar, ustar : (Ny + 1) by (Nx + 1) ndarray
+            Mean and eddy zonal velocities at colocation points.
+        vbar, vstar : (Ny + 1) by (Nx + 1) ndarray
+            Mean and eddy meridional velocities at colocation points.
+            Eddy vertical velocity at colocation points.
+        ux, ubarx : (Ny + 1) by (Nx + 1) ndarray
+            Derivative of residual and mean zonal velocities at colocation points.
+        vy, vbary : (Ny + 1) by (Nx + 1) ndarray
+            Derivative of residual and mean meridional velocities at colocation points.
+        viscu : (Ny + 1) by (Nx + 1) ndarray
+            Viscous term from zonal momentum equation: :math:`\text{Ek} \nabla^2 u`
+        viscv : (Ny + 1) by (Nx + 1) ndarray
+            Viscous term from meridional momentum equation: :math:`\text{Ek} \nabla^2 v`
+        fv : (Ny + 1) by (Nx + 1) ndarray
+            Coriolis term from zonal momentum equation: :math:`fv`
+        fu : (Ny + 1) by (Nx + 1) ndarray
+            Coriolis term from meridional momentum equation: :math:`fu`
+        ηx : (Ny + 1) by (Nx + 1) ndarray
+            Pressure gradient term from zonal momentum equation: :math:`\eta_x`
+        ηy : (Ny + 1) by (Nx + 1) ndarray
+            Pressure gradient term from meridional momentum equation: :math:`\eta_y`
+        fKηy : (Ny + 1) by (Nx + 1) ndarray
+            Form drag term from zonal momentum equation: :math:`f K \eta_y`
+        fKηx : (Ny + 1) by (Nx + 1) ndarray
+            Form drag term from meridional momentum equation: :math:`f K \eta_x`
+        w_yint, wbar_yint : (Nx + 1) array
+            Meridionally integrated residual and mean vertical velocities.
+        rzoc, mzoc : (Nx + 1) array
+            Residual and mean zonal overturning circulations.
+        w_xint, wbar_xint : (Ny + 1) array
+            Zonally integrated residual and mean vertical velocities.
+        rmoc, mmoc : (Nx + 1) array
+            Residual and mean meridional overturning circulations.
+
+        '''
        # differential elements in x and y
         dx = clenshaw_curtis_weight(self.Nx, x1=self.x[0], x2=self.x[-1])
         dy = clenshaw_curtis_weight(self.Ny, x1=self.y[0], x2=self.y[-1])[:,np.newaxis]
@@ -204,7 +344,7 @@ class TwoLayerBasin(object):
 
         self.ustar = apply_operator(self.K@self.Dx, self.η)
         self.vstar = apply_operator(self.K@self.Dy, self.η)
-        
+
         self.ustar[self.boundary_mask] = 0
         self.vstar[self.boundary_mask] = 0
 
@@ -261,12 +401,49 @@ class TwoLayerBasin(object):
 
 
     def interp_field1d(self, x, xi, fld):
+        r''' Interpolate a field in 1D using piecewise cubic Hermite interpolating polynomials
+
+        Parameters
+        ----------
+        x : 1D array
+            Origin grid
+        xi : 1D array
+            Destination grid
+        fld : 1D array
+            Field to be interpolated
+
+        Returns
+        -------
+         : 1D array
+            Interpolated field
+        '''
+
         f = sp.interpolate.PchipInterpolator(x, fld)
 
         return f(xi)
 
 
     def interp_field2d(self, Xi, Yi, fld):
+        r''' Interpolate a field in 2D using splines.
+
+        Parameters
+        ----------
+        Xi : 1D array
+            Destination x grid
+        Yi : 1D array
+            Destination y grid
+        fld : 1D array
+            Field to be interpolated
+
+        Returns
+        -------
+         : 2D array
+            Interpolated field
+
+        Notes
+        -----
+        Assumes the origin grid is the internal colocation grid.
+        '''
         from scipy.interpolate import interpn
         return interpn((self.y, self.x), fld,  (Yi, Xi), method='splinef2d')
 

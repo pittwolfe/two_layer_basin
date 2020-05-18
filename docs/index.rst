@@ -7,14 +7,11 @@ Welcome to Chebyshev Spectral Models's documentation!
 =====================================================
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
-
-.. automodule:: spectral.chebfun
-   :members:
-
-.. automodule:: spectral.two_layer_basin
-   :members:
+    :maxdepth: 2
+    :caption: Contents:
+   
+    chebfun.rst
+    TwoLayerBasin.rst
 
 Indices and tables
 ==================
