@@ -6,7 +6,7 @@ import numpy as np
 import scipy as sp
 import numpy.linalg
 import scipy.sparse
-from scipy.sparse import kron, identity, diags
+from scipy.sparse import kron, identity, diags, bmat
 
 from .chebfun import cheb, apply_operator, clenshaw_curtis_weight
 
@@ -20,7 +20,16 @@ class TwoLayerBasin(object):
          f u &= \eta_y + K f \eta_x + \text{Ek}\, \nabla^2 v \\
          u_x + v_y &= r(\eta - \theta)
 
-    with no-slip boundary conditions using Chebshev colocation.
+    where
+
+    .. math::
+        f &= 1 + b y \\
+        b &= \frac{\beta L_x}{f} \\
+        K &= \frac{K_e}{f_0 L_d^2} \\
+        \text{Ek} &= \frac{A_h}{f_0 L_x^2} \\
+        r &= \frac{1}{f \tau}\frac{L_x^2}{L_d^2}
+
+    with no-slip boundary conditions using Chebyshev colocation.
 
     Parameters
     ----------
@@ -40,6 +49,11 @@ class TwoLayerBasin(object):
     r : float or 2D ndarry, optional
         Relaxation timescale; spatially variable if a 2D array. If not specified at initialization,
         can be specified by calling `init_forcing`.
+    use_sb_corners : bool, optional
+        Use Sabbah and Pasquetti (1998) method to determine corner values. Default: True
+    use_sb_smoother : bool, optional
+        Use Sabbah and Pasquetti (1998) smoother to determine height field. Requires use_sb_smoother = True.
+        Default: True
 
     Attributes
     ----------
@@ -57,13 +71,16 @@ class TwoLayerBasin(object):
         Interface height at colocation points. Available after call to :meth:`~two_layer_basin.TwoLayerBasin.solve`.
 
     '''
-    def __init__(self, Ly, Nx, b, Ek, r=None, Lx=1, Ny=None,
-                    corner_bc_hack=False):
+    def __init__(self, Ly, Nx, b, Ek, r=None, Lx=1, Ny=None, use_sb_corners=True, use_sb_smoother=False):
         self.Lx = Lx
         self.Ly = Ly
         self.b = b
         self.Ek = Ek
-        self.corner_bc_hack = corner_bc_hack
+        self.use_sb_corners = use_sb_corners
+        self.use_sb_smoother = use_sb_smoother
+
+        if use_sb_smoother and not use_sb_corners:
+            raise(RuntimeError('use_sb_smoother = True requires use_sb_corners = True'))
 
         self.operators_initialized = False
         self.boundary_conditions_initialized = False
@@ -71,10 +88,11 @@ class TwoLayerBasin(object):
         self.init_grid(Nx, Ny)
 
         if r is not None:
+            self.r = r
             if isinstance(r, numpy.ndarray):
-                self.r = diags(r.flatten())
+                self.r_op = diags(r.flatten())
             else:
-                self.r = diags(np.repeat(r, self.N))
+                self.r_op = diags(np.repeat(r, self.N))
         else:
             self.r = None
 
@@ -124,10 +142,11 @@ class TwoLayerBasin(object):
         self.boundary_mask = (self.boundary_mask_east | self.boundary_mask_west |
                              self.boundary_mask_north | self.boundary_mask_south)
 
-        self.f = diags(1 + self.b*self.y)
+        self.f    = 1 + self.b*self.y[:,np.newaxis]
+        self.f_op = diags(1 + self.b*self.y)
 
 
-    def init_forcing(self, K, θ, r=None):
+    def init_forcing(self, K, θ, Kx=None, r=None):
         r'''Intitialize the forcing.
 
         Parameters
@@ -138,19 +157,28 @@ class TwoLayerBasin(object):
             Relaxation target for η
         r : float or 2D arry, optional
             Relaxation timescale; spatially variable if a 2D array. Can be specified at initialization.
+        Kx : float or 2D array
+            x-derivative of diffusivity.
         '''
         if isinstance(K, numpy.ndarray):
-            self.K = diags(K.flatten())
+            self.K  = K
+            self.Kx = Kx
+            self.K_op = diags(K.flatten())
         else:
-            self.K = diags(np.repeat(K, self.N))
+            self.K  = np.full((self.Ny+1, self.Nx+1), K)
+            self.K[self.boundary_mask] = 0
+            self.Kx = np.zeros((self.Ny+1, self.Nx+1))
+            self.Kx[self.boundary_mask] = np.nan
+            self.K_op = diags(np.repeat(K, self.N))
 
         self.θ = θ
 
         if r is not None:
+            self.r = r
             if isinstance(r, numpy.ndarray):
-                self.r = diags(r.flatten())
+                self.r_op = diags(r.flatten())
             else:
-                self.r = diags(np.repeat(r, self.N))
+                self.r_op = diags(np.repeat(r, self.N))
         elif self.r is None:
                 raise RuntimeError('Relaxation rate must be specified at initialization or in init_forcing')
 
@@ -185,15 +213,15 @@ class TwoLayerBasin(object):
         self.op_viscU = (self.Ek*self.Δ).tolil()
         self.op_viscV = self.op_viscU.copy()
 
-        self.op_pgfV = (-self.Dy - self.K@kron(self.f,         self.dx)).tolil()
-        self.op_pgfU = ( self.Dx - self.K@kron(self.f@self.dy, self.Ix)).tolil()
+        self.op_pgfV = (-self.Dy - self.K_op@kron(self.f_op,         self.dx)).tolil()
+        self.op_pgfU = ( self.Dx - self.K_op@kron(self.f_op@self.dy, self.Ix)).tolil()
 
-        self.op_coriU = kron(self.f, self.Ix, format='lil')
+        self.op_coriU = kron(self.f_op, self.Ix, format='lil')
         self.op_coriV = self.op_coriU.copy()
 
         self.op_Dxu = self.Dx.tolil(copy=True)
         self.op_Dyv = self.Dy.tolil(copy=True)
-        self.op_rIη = (-self.r).tolil(copy=True)
+        self.op_rIη = (-self.r_op).tolil(copy=True)
 
         self.operators_initialized = True
 
@@ -229,44 +257,11 @@ class TwoLayerBasin(object):
 
         θrhs = self.θ.copy().flatten()
 
-        if self.corner_bc_hack:
-            # Corners are pathological: replace η equation by the requirement that the corner value be the average of
-            # the nearby boundary points
-            indices = np.reshape(np.arange(self.N), (self.Ny+1, self.Nx+1))
-
-            # northern corners
-            idx_corners = ((self.boundary_mask_west | self.boundary_mask_east)
-                         & (self.boundary_mask_south | self.boundary_mask_north)).flatten()
-
-            self.op_Dxu[idx_corners,:] = 0
-            self.op_Dyv[idx_corners,:] = 0
-
-            # NW corner
-            self.op_rIη[indices[-1,0],indices[-1,0]] = -2
-            self.op_rIη[indices[-1,0],indices[-2,0]] = 1
-            self.op_rIη[indices[-1,0],indices[-1,1]] = 1
-
-            # NE corner
-            self.op_rIη[indices[-1,-1],indices[-1,-1]] = -2
-            self.op_rIη[indices[-1,-1],indices[-2,-1]] = 1
-            self.op_rIη[indices[-1,-1],indices[-1,-2]] = 1
-
-            # SW corner
-            self.op_rIη[indices[0,0],indices[0,0]] = -2
-            self.op_rIη[indices[0,0],indices[1,0]] = 1
-            self.op_rIη[indices[0,0],indices[0,1]] = 1
-
-            # SE corner
-            self.op_rIη[indices[0,-1],indices[0,-1]] = -2
-            self.op_rIη[indices[0,-1],indices[1,-1]] = 1
-            self.op_rIη[indices[0,-1],indices[0,-2]] = 1
-
-            θrhs[idx_corners] = 0
-
         self.rhs = np.zeros(3*self.N)
-        self.rhs[2*self.N:] = -self.r*θrhs
+        self.rhs[2*self.N:] = -self.r_op*θrhs
 
         self.boundary_conditions_initialized = True
+
 
     def solve(self):
         r'''Solve the linear system
@@ -290,6 +285,73 @@ class TwoLayerBasin(object):
         self.u = np.reshape(sol[:self.N],         (self.Ny+1, self.Nx+1))
         self.v = np.reshape(sol[self.N:2*self.N], (self.Ny+1, self.Nx+1))
         self.η = np.reshape(sol[2*self.N:],       (self.Ny+1, self.Nx+1))
+
+        if self.use_sb_corners:
+            self.η_orig = self.η.copy() # Save a copy of the original for diagnostic purposes
+            self.sb_corners()
+
+
+    def sb_corners(self):
+        '''Use method of Sabbah and Pasquetti (1998) to determine corner values.
+        '''
+        corner_mask = ((self.boundary_mask_west | self.boundary_mask_east)
+                     & (self.boundary_mask_south | self.boundary_mask_north))
+        corner_row, corner_col = np.nonzero(corner_mask)
+
+        # weights from the Gauss-Lobatto quadrature
+        cij = np.ones((self.Ny+1, self.Nx+1))
+        cij[self.boundary_mask] = 2
+        cij[corner_mask] = 4
+
+        # The C are a delta functions with weights in each of the corners
+        C  = np.zeros((4, self.Ny+1, self.Nx+1))
+        Cx = np.zeros((4, self.Ny+1, self.Nx+1))
+        Cy = np.zeros((4, self.Ny+1, self.Nx+1))
+
+        for k in range(4):
+            j = corner_row[k]
+            i = corner_col[k]
+            C[k, j, i] = 1
+            if self.use_sb_smoother:
+                C[k,...] = self.sb_filter(C[k])
+            Cx[k] = apply_operator(self.Dx, C[k])
+            Cy[k] = apply_operator(self.Dy, C[k])
+
+        ηh = self.η - self.θ  # Homogenous η
+        if self.use_sb_smoother:
+            ηh = self.sb_filter(ηh)
+        ηx = apply_operator(self.Dx, ηh)
+        ηy = apply_operator(self.Dy, ηh)
+
+
+        # Set up and solve the linear system for the corner values
+        A = np.zeros((4,4))
+        S = np.zeros(4)
+
+        for k in range(4):
+            S[k] = -np.sum((ηx*Cx[k] + ηy*Cy[k])/cij)
+            for l in range(4):
+                A[k,l] = np.sum((Cx[k]*Cx[l] + Cy[k]*Cy[l])/cij)
+
+        ηc = sp.linalg.solve(A, S, assume_a='sym')
+
+
+        self.η = self.θ + ηh
+        for k in range(4):
+            self.η += ηc[k]*C[k]
+
+
+    def sb_filter(self, fld):
+        '''Chop off the spurious modes following Sabbah and Pasquetti (1998)
+        '''
+        from .chebfun import transform_2d, inverse_transform_2d
+
+        FLD = transform_2d(fld)
+        FLD[0, -1] = 0
+        FLD[-1,-1] = 0
+        FLD[-1,-1] = 0
+
+        return inverse_transform_2d(FLD)
 
 
     def calc_derived_quantities(self):
@@ -340,10 +402,16 @@ class TwoLayerBasin(object):
         dx = clenshaw_curtis_weight(self.Nx, x1=self.x[0], x2=self.x[-1])
         dy = clenshaw_curtis_weight(self.Ny, x1=self.y[0], x2=self.y[-1])[:,np.newaxis]
 
-        self.w = apply_operator(self.r, self.η - self.θ)
+        self.ux = apply_operator(self.Dx, self.u)
+        self.vy = apply_operator(self.Dy, self.v)
 
-        self.ustar = apply_operator(self.K@self.Dx, self.η)
-        self.vstar = apply_operator(self.K@self.Dy, self.η)
+        self.w = self.r*(self.η - self.θ)
+
+        self.ηx = apply_operator(self.Dx, self.η)
+        self.ηy = apply_operator(self.Dy, self.η)
+
+        self.ustar = self.K*self.ηx
+        self.vstar = self.K*self.ηy
 
         self.ustar[self.boundary_mask] = 0
         self.vstar[self.boundary_mask] = 0
@@ -357,26 +425,19 @@ class TwoLayerBasin(object):
         self.ubar = self.u - self.ustar
         self.vbar = self.v - self.vstar
 
-        self.ubarx = apply_operator(self.Dx, self.ubar)
-        self.vbary = apply_operator(self.Dy, self.vbar)
+        self.ubarx = self.ux - self.ustarx
+        self.vbary = self.vy - self.vstary
         self.wbar = self.ubarx + self.vbary
-
 
 
         self.viscu = apply_operator(self.Ek*self.Δ, self.u)
         self.viscv = apply_operator(self.Ek*self.Δ, self.v)
-        self.fv = apply_operator(kron(self.f, self.Ix), self.v)
-        self.fu = apply_operator(kron(self.f, self.Ix), self.u)
-        self.ηx = apply_operator(self.Dx, self.η)
-        self.ηy = apply_operator(self.Dy, self.η)
-        self.fKηx = apply_operator(self.K@kron(self.f, self.dx), self.η)
-        self.fKηy = apply_operator(self.K@kron(self.f*self.dy, self.Ix), self.η)
+        self.fv = self.f*self.v
+        self.fu = self.f*self.u
+        self.fKηx = self.f*self.K*self.ηx
+        self.fKηy = self.f*self.K*self.ηy
         self.fKηx[self.boundary_mask] = 0
         self.fKηy[self.boundary_mask] = 0
-
-        self.ux = apply_operator(self.Dx, self.u)
-        self.vy = apply_operator(self.Dy, self.v)
-
 
 
         # ZOC
@@ -394,8 +455,10 @@ class TwoLayerBasin(object):
 
 
         # PV
+        self.bv = self.b*self.v
         self.ζ = apply_operator(self.Dx, self.v) - apply_operator(self.Dy, self.u)
-        self.pv_form_drag = apply_operator(self.Dx, self.fKηx) + apply_operator(self.Dy, self.fKηy)
+        self.pv_form_drag = ( self.f*self.K*apply_operator(self.Δ, self.η) + self.f*self.Kx*self.ηx
+                            + self.b*self.K*self.ηy)
         self.pv_visc = apply_operator(self.Ek*self.Δ, self.ζ)
 
 
