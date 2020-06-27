@@ -71,7 +71,7 @@ class TwoLayerBasin(object):
         Interface height at colocation points. Available after call to :meth:`~two_layer_basin.TwoLayerBasin.solve`.
 
     '''
-    def __init__(self, Ly, Nx, b, Ek, r=None, Lx=1, Ny=None, use_sb_corners=True, use_sb_smoother=False):
+    def __init__(self, Ly, Nx, b, Ek, r=None, K=None, Kx=None, Ky=None, θ=None, Lx=1, Ny=None, use_sb_corners=True, use_sb_smoother=False):
         self.Lx = Lx
         self.Ly = Ly
         self.b = b
@@ -87,15 +87,7 @@ class TwoLayerBasin(object):
 
         self.init_grid(Nx, Ny)
 
-        if r is not None:
-            self.r = r
-            if isinstance(r, numpy.ndarray):
-                self.r_op = diags(r.flatten())
-            else:
-                self.r_op = diags(np.repeat(r, self.N))
-        else:
-            self.r = None
-
+        self.init_forcing(θ, K=K, Kx=Kx, Ky=Ky, r=r, called_from_init=True)
 
     def init_grid(self, Nx, Ny):
         r'''Initialize the grid.
@@ -125,6 +117,10 @@ class TwoLayerBasin(object):
         self.x, self.dx, self.dx2 = cheb(self.Nx, x1=0, x2=self.Lx, calc_D2=True)
         self.y, self.dy, self.dy2 = cheb(self.Ny, x1=-self.Ly/2, x2=self.Ly/2, calc_D2=True)
 
+       # integration weights in x and y
+        self.wx = clenshaw_curtis_weight(self.Nx, x1=self.x[0], x2=self.x[-1])
+        self.wy = clenshaw_curtis_weight(self.Ny, x1=self.y[0], x2=self.y[-1])
+
         self.X, self.Y = np.meshgrid(self.x, self.y)
         self.X_flat = self.X.flatten()
         self.Y_flat = self.Y.flatten()
@@ -146,7 +142,7 @@ class TwoLayerBasin(object):
         self.f_op = diags(1 + self.b*self.y)
 
 
-    def init_forcing(self, K, θ, Kx=None, r=None):
+    def init_forcing(self, θ, K=None, Kx=None, Ky=None, r=None, called_from_init=False):
         r'''Intitialize the forcing.
 
         Parameters
@@ -160,18 +156,33 @@ class TwoLayerBasin(object):
         Kx : float or 2D array
             x-derivative of diffusivity.
         '''
-        if isinstance(K, numpy.ndarray):
-            self.K  = K
-            self.Kx = Kx
-            self.K_op = diags(K.flatten())
-        else:
-            self.K  = np.full((self.Ny+1, self.Nx+1), K)
-            self.K[self.boundary_mask] = 0
-            self.Kx = np.zeros((self.Ny+1, self.Nx+1))
-            self.Kx[self.boundary_mask] = np.nan
-            self.K_op = diags(np.repeat(K, self.N))
 
         self.θ = θ
+
+        if K is not None:
+            if isinstance(K, numpy.ndarray):
+                self.K  = K
+                self.Kx = Kx
+                self.Ky = Ky
+                self.K_op = diags(K.flatten())
+            else:
+                self.K  = np.full((self.Ny+1, self.Nx+1), K)
+                self.K[self.boundary_mask] = 0
+
+                self.Kx = np.zeros((self.Ny+1, self.Nx+1))
+                self.Ky = np.zeros((self.Ny+1, self.Nx+1))
+
+                # insert numerical delta functions along the boundary
+                self.Kx[1:-1, 0] = self.wx[ 0]
+                self.Kx[1:-1,-1] = self.wx[-1]
+
+                self.Ky[ 0,1:-1] = self.wy[ 0]
+                self.Ky[-1,1:-1] = self.wy[-1]
+
+                self.K_op = diags(np.repeat(K, self.N))
+#         elif self.K is None and not called_from_init:
+#                 raise RuntimeError('Diffusivity rate must be specified at initialization or in init_forcing')
+
 
         if r is not None:
             self.r = r
@@ -179,8 +190,8 @@ class TwoLayerBasin(object):
                 self.r_op = diags(r.flatten())
             else:
                 self.r_op = diags(np.repeat(r, self.N))
-        elif self.r is None:
-                raise RuntimeError('Relaxation rate must be specified at initialization or in init_forcing')
+#         elif self.r is None and not called_from_init:
+#                 raise RuntimeError('Relaxation rate must be specified at initialization or in init_forcing')
 
 
     def init_operators(self, reset=False):
@@ -398,9 +409,8 @@ class TwoLayerBasin(object):
             Residual and mean meridional overturning circulations.
 
         '''
-       # differential elements in x and y
-        dx = clenshaw_curtis_weight(self.Nx, x1=self.x[0], x2=self.x[-1])
-        dy = clenshaw_curtis_weight(self.Ny, x1=self.y[0], x2=self.y[-1])[:,np.newaxis]
+        wx = self.wx
+        wy = self.wy[:,np.newaxis]
 
         self.ux = apply_operator(self.Dx, self.u)
         self.vy = apply_operator(self.Dy, self.v)
@@ -413,12 +423,8 @@ class TwoLayerBasin(object):
         self.ustar = self.K*self.ηx
         self.vstar = self.K*self.ηy
 
-        self.ustar[self.boundary_mask] = 0
-        self.vstar[self.boundary_mask] = 0
-
-
-        self.ustarx = apply_operator(self.Dx, self.ustar)
-        self.vstary = apply_operator(self.Dy, self.vstar)
+        self.ustarx = self.K*apply_operator(self.D2x, self.η) + self.Kx*self.ηx
+        self.vstary = self.K*apply_operator(self.D2y, self.η) + self.Ky*self.ηy
 
         self.wstar = self.ustarx + self.vstary
 
@@ -427,7 +433,7 @@ class TwoLayerBasin(object):
 
         self.ubarx = self.ux - self.ustarx
         self.vbary = self.vy - self.vstary
-        self.wbar = self.ubarx + self.vbary
+        self.wbar =  self.w - self.wstar
 
 
         self.viscu = apply_operator(self.Ek*self.Δ, self.u)
@@ -436,22 +442,20 @@ class TwoLayerBasin(object):
         self.fu = self.f*self.u
         self.fKηx = self.f*self.K*self.ηx
         self.fKηy = self.f*self.K*self.ηy
-        self.fKηx[self.boundary_mask] = 0
-        self.fKηy[self.boundary_mask] = 0
 
 
         # ZOC
-        self.w_yint    = np.sum(dy*self.w, axis=0)
-        self.wbar_yint = np.sum(dy*self.wbar, axis=0)
-        self.rzoc      = np.sum(dy*self.u, axis=0)
-        self.mzoc      = np.sum(dy*self.ubar, axis=0)
+        self.w_yint    = np.sum(wy*self.w, axis=0)
+        self.wbar_yint = np.sum(wy*self.wbar, axis=0)
+        self.rzoc      = np.sum(wy*self.u, axis=0)
+        self.mzoc      = np.sum(wy*self.ubar, axis=0)
 
 
         # MOC
-        self.w_xint    = np.sum(dx*self.w, axis=1)
-        self.wbar_xint = np.sum(dx*self.wbar, axis=1)
-        self.rmoc      = np.sum(dx*self.v, axis=1)
-        self.mmoc      = np.sum(dx*self.vbar, axis=1)
+        self.w_xint    = np.sum(wx*self.w, axis=1)
+        self.wbar_xint = np.sum(wx*self.wbar, axis=1)
+        self.rmoc      = np.sum(wx*self.v, axis=1)
+        self.mmoc      = np.sum(wx*self.vbar, axis=1)
 
 
         # PV
