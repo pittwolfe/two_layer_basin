@@ -277,7 +277,7 @@ def cheb(N, x1=-1, x2=1, calc_D2=False):
         return xp, Dp
     else:
         D2 = D@D
-        # correct diagonal enties as per Bayless et al. (1994)
+        # correct diagonal enties as per Bayliss et al. (1994)
         idx = np.diag_indices_from(D2)
         D2[idx] = 0
         D2[idx] = -np.sum(D2, axis=1)
@@ -551,7 +551,7 @@ def clenshaw_curtis_weight(N, x1=-1, x2=1):
     Notes
     -----
 
-    From equations (A.48) and (A.49) in Payret (2002).
+    From equations (A.48) and (A.49) in Peyret (2002).
 
     '''
     ω = np.zeros(N+1)
