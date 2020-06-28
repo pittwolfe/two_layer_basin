@@ -87,7 +87,7 @@ class TwoLayerBasin(object):
 
         self.init_grid(Nx, Ny)
 
-        self.init_forcing(θ, K=K, Kx=Kx, Ky=Ky, r=r, called_from_init=True)
+        self.init_forcing(θ, K=K, r=r, called_from_init=True)
 
     def init_grid(self, Nx, Ny):
         r'''Initialize the grid.
@@ -142,19 +142,17 @@ class TwoLayerBasin(object):
         self.f_op = diags(1 + self.b*self.y)
 
 
-    def init_forcing(self, θ, K=None, Kx=None, Ky=None, r=None, called_from_init=False):
+    def init_forcing(self, θ, K=None, r=None, called_from_init=False):
         r'''Intitialize the forcing.
 
         Parameters
         ----------
-        K : float or 2D array
-            Nondimensional diffusivities; spacially variable if a 2D array.
         θ : 2D array
             Relaxation target for η
+        K : float or 2D array, optional
+            Nondimensional diffusivities; spacially variable if a 2D array. Can be specified at initialization.
         r : float or 2D arry, optional
             Relaxation timescale; spatially variable if a 2D array. Can be specified at initialization.
-        Kx : float or 2D array
-            x-derivative of diffusivity.
         '''
 
         self.θ = θ
@@ -162,26 +160,15 @@ class TwoLayerBasin(object):
         if K is not None:
             if isinstance(K, numpy.ndarray):
                 self.K  = K
-                self.Kx = Kx
-                self.Ky = Ky
                 self.K_op = diags(K.flatten())
+                self.boundary_deltas = False
             else:
                 self.K  = np.full((self.Ny+1, self.Nx+1), K)
-                self.K[self.boundary_mask] = 0
 
-                self.Kx = np.zeros((self.Ny+1, self.Nx+1))
-                self.Ky = np.zeros((self.Ny+1, self.Nx+1))
-
-                # insert numerical delta functions along the boundary
-                self.Kx[1:-1, 0] = self.wx[ 0]
-                self.Kx[1:-1,-1] = self.wx[-1]
-
-                self.Ky[ 0,1:-1] = self.wy[ 0]
-                self.Ky[-1,1:-1] = self.wy[-1]
+                # If true, calculate the contribution of the delta functions on the boundary separately
+                self.boundary_deltas = True
 
                 self.K_op = diags(np.repeat(K, self.N))
-#         elif self.K is None and not called_from_init:
-#                 raise RuntimeError('Diffusivity rate must be specified at initialization or in init_forcing')
 
 
         if r is not None:
@@ -190,8 +177,6 @@ class TwoLayerBasin(object):
                 self.r_op = diags(r.flatten())
             else:
                 self.r_op = diags(np.repeat(r, self.N))
-#         elif self.r is None and not called_from_init:
-#                 raise RuntimeError('Relaxation rate must be specified at initialization or in init_forcing')
 
 
     def init_operators(self, reset=False):
@@ -423,8 +408,31 @@ class TwoLayerBasin(object):
         self.ustar = self.K*self.ηx
         self.vstar = self.K*self.ηy
 
-        self.ustarx = self.K*apply_operator(self.D2x, self.η) + self.Kx*self.ηx
-        self.vstary = self.K*apply_operator(self.D2y, self.η) + self.Ky*self.ηy
+        self.ustarx = apply_operator(self.Dx, self.ustar)
+        self.vstary = apply_operator(self.Dy, self.vstar)
+
+        if self.boundary_deltas:
+            Kx = np.zeros_like(self.K)
+            Kx[1:-1, 0] = 1/self.wx[ 0]
+            Kx[1:-1,-1] = 1/self.wx[-1]
+
+            Ky = np.zeros_like(self.K)
+            Ky[ 0,1:-1] = 1/self.wy[ 0]
+            Ky[-1,1:-1] = 1/self.wy[-1]
+
+            # insert numerical delta functions along the boundary
+            self.ustarx += Kx*self.ηx
+            self.ustary += Ky*self.ηy
+
+            self.ustar[self.boundary_mask] = 0
+            self.vstar[self.boundary_mask] = 0
+
+            self.ustarx[ 0,:] = 0
+            self.ustarx[-1,:] = 0
+
+            self.vstary[:, 0] = 0
+            self.vstary[:,-1] = 0
+
 
         self.wstar = self.ustarx + self.vstary
 
@@ -461,10 +469,11 @@ class TwoLayerBasin(object):
         # PV
         self.bv = self.b*self.v
         self.ζ = apply_operator(self.Dx, self.v) - apply_operator(self.Dy, self.u)
-        self.pv_form_drag = ( self.f*self.K*apply_operator(self.Δ, self.η) + self.f*self.Kx*self.ηx
-                            + self.b*self.K*self.ηy)
         self.pv_visc = apply_operator(self.Ek*self.Δ, self.ζ)
 
+        self.pv_form_drag = apply_operator(self.Dx, self.fKηx) + apply_operator(self.Dy, self.fKηy)
+        if self.boundary_deltas:
+            self.pv_form_drag += self.f*(Kx*self.ηx + Ky*self.ηy)
 
 
     def interp_field1d(self, x, xi, fld):
