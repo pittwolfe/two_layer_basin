@@ -603,22 +603,6 @@ def cheb_int(fld, ω=None, x=None):
 
     return np.sum(ω*fld)
 
-# def integrate_in_x(fld, D):
-#
-#     if fld.ndim == 1:
-#         FLD = sp.linalg.solve(D[:-1,1:], fld[1:])
-#     else:
-#         FLD = sp.linalg.solve(D[:-1,1:], fld[:,1:].T).T
-#
-#     return FLD
-#
-# def integrate_in_y(fld, D):
-#     if fld.ndim == 1:
-#         FLD = sp.linalg.solve(D[:-1,1:], fld[1:])
-#     else:
-#         FLD = sp.linalg.solve(D[:-1,1:], fld[1:,:])
-#
-#     return FLD
 
 def interp_field(fld):
     return interpn((y, x), fld,  (yyi, xxi), method='splinef2d')
