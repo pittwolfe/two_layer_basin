@@ -413,16 +413,16 @@ class TwoLayerBasin(object):
 
         if self.boundary_deltas:
             Kx = np.zeros_like(self.K)
-            Kx[1:-1, 0] = 1/self.wx[ 0]
-            Kx[1:-1,-1] = 1/self.wx[-1]
+            Kx[1:-1, 0] =  self.K[1:-1, 0]/self.wx[ 0]
+            Kx[1:-1,-1] = -self.K[1:-1,-1]/self.wx[-1]
 
             Ky = np.zeros_like(self.K)
-            Ky[ 0,1:-1] = 1/self.wy[ 0]
-            Ky[-1,1:-1] = 1/self.wy[-1]
+            Ky[ 0,1:-1] =  self.K[ 0,1:-1]/self.wy[ 0]
+            Ky[-1,1:-1] = -self.K[-1,1:-1]/self.wy[-1]
 
             # insert numerical delta functions along the boundary
             self.ustarx += Kx*self.ηx
-            self.ustary += Ky*self.ηy
+            self.vstary += Ky*self.ηy
 
             self.ustar[self.boundary_mask] = 0
             self.vstar[self.boundary_mask] = 0
