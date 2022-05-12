@@ -49,7 +49,7 @@ def grid(N, type='E', x1=-1, x2=1):
 
     return x
 
-def derivative_matrix(N, source_grid='E', target_grid='E', x1=-1, x2=-1, second_derivative=False):
+def derivative_matrix(N, source_grid='E', target_grid='E', x1=-1, x2=1, second_derivative=False):
     r'''Compute Chebyshev differentiation matrix and grid.
 
     Parameters
@@ -518,9 +518,13 @@ def interp_1d(u, interp_fac, x=None):
         Function on Chebyshev points.
     interp_fac : integer
         Degree of grid refinement.
+    x : list or tuple, optional
+        First two elements are the left and right endpoints of the Chebyshev grid. Default: None
 
     Returns
     -------
+    x  : array_like
+        Refined Cheybshev grid. Only returned if x is not None on entry.
     ui : array_like
         Values at Chebyshev points.
 
@@ -602,8 +606,4 @@ def cheb_int(fld, ω=None, x=None):
         ω = clenshaw_curtis_weight(N)
 
     return np.sum(ω*fld)
-
-
-def interp_field(fld):
-    return interpn((y, x), fld,  (yyi, xxi), method='splinef2d')
 
