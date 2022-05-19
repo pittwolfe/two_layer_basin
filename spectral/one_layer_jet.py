@@ -15,6 +15,8 @@ class OneLayerJet_BackgroundFlow(object):
         self.F = F     # baroclinic inverse Burger number
         self.b = b     # beta parameter
 
+        self.Δζ = 2/(1 - self.δ**2) # The jump in ζ at y = 0.
+
     def f(self, y):
         if self.b == 0:
             return np.ones_like(y)
@@ -88,7 +90,10 @@ class OneLayerJet_BackgroundFlow(object):
     def h(self, y):
         return 1 + self.Ro*self.F*self.η(y)
 
-    def ζ(self, y):
+    def ζ_jump(self, y):
+        '''
+        This is a discontinuous version of ζ with a jump at y = 0.
+        '''
         δ = self.δ
         S = np.sign(y)
 
@@ -99,6 +104,23 @@ class OneLayerJet_BackgroundFlow(object):
             ζ = np.zeros_like(y)
             ζ[y < 0] = self.u(y[y<0])/2
             ζ[y==0] = np.nan
+
+        return ζ
+
+    def ζ(self, y):
+        '''
+        This is a continuous version of ζ with the value at y = 0 the average of the two limits.
+        '''
+        δ = self.δ
+
+        ζ = np.zeros_like(y)
+        if (δ < 1):
+            ζ[y < 0] = -self.u(y[y < 0])/(1+δ)
+            ζ[y > 0] =  self.u(y[y > 0])/(1-δ)
+            ζ[y == 0] = δ/(1-δ**2)
+        else:
+            ζ[y < 0] = -self.u(y[y<0])/2
+            ζ[y==0] = -1/4
 
         return ζ
 
@@ -645,7 +667,7 @@ class OneLayerJet_TL(object):
     A class implementing a one-layer Rossby-Zhang jet using the rational Chebyshev functions, TL.
     '''
 
-    def __init__(self, δ, Ro, F, b, N, Ln, Ls=None, drop_endpoints=True):
+    def __init__(self, δ, Ro, F, b, N, Ln, Ls=None):
         self.δ = δ     # asymmetry parameter
         self.Ro = Ro   # Rossby number
         self.F = F     # baroclinic inverse Burger number
@@ -656,7 +678,6 @@ class OneLayerJet_TL(object):
             self.mapping_Ls = Ln # mapping scale for the southern domain
         else:
             self.mapping_Ls = Ls # mapping scale for the southern domain
-        self.drop_endpoints = drop_endpoints
 
 
         self.bg = OneLayerJet_BackgroundFlow(self.δ, self.Ro, self.F, self.b)
@@ -691,101 +712,52 @@ class OneLayerJet_TL(object):
         self.xN[ 0] = 0
         self.yN[ 0] = 0
 
-        if self.drop_endpoints:
-            # projects quantities from the unique grid to the duplicate grid
-            self.PtoD_full = np.block([
-                [np.identity(N+1), np.zeros((N+1, N))],
-                [np.zeros((N+1, N)), np.identity(N+1)]
-            ])
+        # projects quantities from the unique grid to the duplicate grid
+        self.PtoD_full = np.block([
+            [np.identity(N+1), np.zeros((N+1, N))],
+            [np.zeros((N+1, N)), np.identity(N+1)]
+        ])
 
-            # projects quantities from the duplicate grid to the unique grid
-            self.PfromD_full = np.block([
-                [np.identity(N+1), np.zeros((N+1, N+1))],
-                [np.zeros((N, N+2)), np.identity(N)]
-            ])
-            self.PfromD_full[N, N  ] = 0.5
-            self.PfromD_full[N, N+1] = 0.5
+        # projects quantities from the duplicate grid to the unique grid
+        self.PfromD_full = np.block([
+            [np.identity(N+1), np.zeros((N+1, N+1))],
+            [np.zeros((N, N+2)), np.identity(N)]
+        ])
+        self.PfromD_full[N, N  ] = 0.5
+        self.PfromD_full[N, N+1] = 0.5
 
-            # There are two different ways to construct the derivative matrix for functions with continuous derivatives
-            # Picking one or the other leads to weird asymmetries in the derivative matrix, so we average the two together
-            # This turns out to be the same as applying the projection operator to dyD
-            # dyC1 = np.block([[self.dyS, np.zeros((N+1, N))],
-            #                 [np.zeros((N, N)), self.dyN[1:,:]]])
-            # dyC2 = np.block([[self.dyS[:-1,:], np.zeros((N, N))],
-            #                 [np.zeros((N+1, N)), self.dyN]])
-            # self.dyC = (dyC1+dyC2)/2
-
-
-            # This operator is for functions with discontinuous derivatives at y = 0
-            self.dyD_full = np.block([[self.dyS, np.zeros((N+1, N))],
-                                      [np.zeros((N+1, N)), self.dyN]])
-
-            self.dyC_full = self.PfromD_full @ self.dyD_full
-
-            self.dyD = self.dyD_full[1:-1,1:-1]
-            self.dyC = self.dyC_full[1:-1,1:-1]
-            self.PtoD = self.PtoD_full[1:-1,1:-1]
-            self.PfromD = self.PfromD_full[1:-1,1:-1]
-
-            # Various zero and identity matrices
-            self.Z      = np.zeros((2*N-1, 2*N-1))
-            self.ZtoD   = np.zeros((2*N,   2*N-1))
-            self.ZfromD = np.zeros((2*N-1, 2*N))
-
-            self.I  = np.identity(2*N-1)
-            self.ID = np.identity(2*N)
-
-            self.idx_U = np.arange(2*N)
-            self.idx_ψ = self.idx_U[-1] + 1 + np.arange(2*N-1)
-            self.idx_η = self.idx_ψ[-1] + 1 + np.arange(2*N-1)
-
-        else:
-            # On the other hand, we may want to differentiate things that go to constants at infinity.
-            # projects quantities from the unique grid to the duplicate grid
-            self.PtoD = np.block([
-                [np.identity(N+1), np.zeros((N+1, N))],
-                [np.zeros((N+1, N)), np.identity(N+1)]
-            ])
-
-            # projects quantities from the duplicate grid to the unique grid
-            self.PfromD = np.block([
-                [np.identity(N+1), np.zeros((N+1, N+1))],
-                [np.zeros((N, N+2)), np.identity(N)]
-            ])
-            self.PfromD[N, N  ] = 0.5
-            self.PfromD[N, N+1] = 0.5
-
-            # There are two different ways to construct the derivative matrix for functions with continuous derivatives
-            # Picking one or the other leads to weird asymmetries in the derivative matrix, so we average the two together
-            # This turns out to be the same as applying the projection operator to dyD
-            # dyC1 = np.block([[self.dyS, np.zeros((N+1, N))],
-            #                 [np.zeros((N, N)), self.dyN[1:,:]]])
-            # dyC2 = np.block([[self.dyS[:-1,:], np.zeros((N, N))],
-            #                 [np.zeros((N+1, N)), self.dyN]])
-            # self.dyC = (dyC1+dyC2)/2
+        # There are two different ways to construct the derivative matrix for functions with continuous derivatives
+        # Picking one or the other leads to weird asymmetries in the derivative matrix, so we average the two together
+        # This turns out to be the same as applying the projection operator to dyD
+        # dyC1 = np.block([[self.dyS, np.zeros((N+1, N))],
+        #                 [np.zeros((N, N)), self.dyN[1:,:]]])
+        # dyC2 = np.block([[self.dyS[:-1,:], np.zeros((N, N))],
+        #                 [np.zeros((N+1, N)), self.dyN]])
+        # self.dyC = (dyC1+dyC2)/2
 
 
-            # This operator is for functions with discontinuous derivatives at y = 0
-            self.dyD = np.block([[self.dyS, np.zeros((N+1, N))],
-                                 [np.zeros((N+1, N)), self.dyN]])
+        # This operator is for functions with discontinuous derivatives at y = 0
+        self.dyD_full = np.block([[self.dyS, np.zeros((N+1, N))],
+                                  [np.zeros((N+1, N)), self.dyN]])
 
-            self.dyC = self.PfromD @ self.dyD
+        self.dyC_full = self.PfromD_full @ self.dyD_full
 
-            # Various zero and identity matrices
-            self.Z      = np.zeros((2*N+1, 2*N+1))
-            self.ZtoD   = np.zeros((2*N+2, 2*N+1))
-            self.ZfromD = np.zeros((2*N+1, 2*N+2))
+        self.dyD = self.dyD_full[1:-1,1:-1]
+        self.dyC = self.dyC_full[1:-1,1:-1]
+        self.PtoD = self.PtoD_full[1:-1,1:-1]
+        self.PfromD = self.PfromD_full[1:-1,1:-1]
 
-            self.I  = np.identity(2*N+1)
-            self.ID = np.identity(2*N+2)
+        # Various zero and identity matrices
+        self.Z      = np.zeros((2*N-1, 2*N-1))
+        self.ZtoD   = np.zeros((2*N,   2*N-1))
+        self.ZfromD = np.zeros((2*N-1, 2*N))
 
-            # u is on the duplicate grid with enpoints: 2*N+2 points
-            self.idx_U = np.arange(2*N+2)
-            # ψ and η are on the unique grid without enpoints: 2*N-1 points
-            self.idx_ψ = self.idx_U[-1] + 1 + np.arange(2*N-1)
-            # η is on the unique grid with the end points: 2*N+1 points
-            self.idx_η = self.idx_ψ[-1] + 1 + np.arange(2*N+1)
+        self.I  = np.identity(2*N-1)
+        self.ID = np.identity(2*N)
 
+        self.idx_U = np.arange(2*N-1)
+        self.idx_ψ = self.idx_U[-1] + 1 + np.arange(2*N-1)
+        self.idx_η = self.idx_ψ[-1] + 1 + np.arange(2*N-1)
 
         # The duplicate grid (points at infinity and duplicates 0)
         self.xd = np.hstack([self.xS[1:], self.xN[:-1]])
@@ -795,6 +767,10 @@ class OneLayerJet_TL(object):
         self.xu = np.hstack([self.xS[1:], self.xN[1:-1]])
         self.yu = np.hstack([self.yS[1:], self.yN[1:-1]])
 
+        # make the unique grid the default grid
+        self.x = self.xu
+        self.y = self.yu
+
         self.grid_initialized = True
 
     def init_background_flow(self):
@@ -802,15 +778,10 @@ class OneLayerJet_TL(object):
             self.init_grid()
 
         # background flow on unique points
-        self.f_u    = self.bg.f(self.yu)
-        self.ubar_u = self.bg.u(self.yu)
-        self.hbar_u = self.bg.h(self.yu)
-
-        # background flow on duplicate points
-        self.f_d    = self.bg.f(self.yd)
-        self.ubar_d = self.bg.u(self.yd)
-        self.hbar_d = self.bg.h(self.yd)
-        self.ζbar_d = -np.hstack((self.bg.dudy_south(self.yS[1:]), self.bg.dudy_north(self.yN[:-1])))
+        self.f    = self.bg.f(self.y)
+        self.ubar = self.bg.u(self.y)
+        self.hbar = self.bg.h(self.y)
+        self.ζbar = self.bg.ζ(self.y)
 
         self.background_flow_initialized = True
 
@@ -822,23 +793,24 @@ class OneLayerJet_TL(object):
             self.init_background_flow()
 
         # u-equation
-        self.adv_U = np.diag(self.Ro*self.ubar_d)
+        # Note that the u-equation at y = 0 is the average of the two limits
+        self.adv_U = np.diag(self.Ro*self.ubar)
         # this is actually the nonlinear coriolis term
-        self.cor_U = -np.diag(self.f_d + self.Ro*self.ζbar_d) @ self.PtoD
-        self.pgf_U = np.diag(self.hbar_d) @ self.PtoD
-        self.ten_U = self.ID
+        self.cor_U = -np.diag(self.f + self.Ro*self.ζbar)
+        self.pgf_U = np.diag(self.hbar)
+        self.ten_U = self.I
 
         # v-equation
         # Note: the v-equation at y = 0 is the average of the v-equations at 0+ and 0-, using the fact
         # that v is continuous
-        self.adv_V = -self.Ro*np.diag(self.ubar_u)  # this term should get multiplied by k**2
-        self.cor_V = np.diag(self.f_u) @ self.PfromD
-        self.pgf_V = np.diag(self.hbar_u) @ self.dyC
+        self.adv_V = -self.Ro*np.diag(self.ubar)  # this term should get multiplied by k**2
+        self.cor_V = np.diag(self.f)
+        self.pgf_V = np.diag(self.hbar) @ self.dyC
         self.ten_V = -self.I  # this term should get multiplied by k**2
 
         # η-equation
-        self.adv_H = self.Ro*self.F*np.diag(self.ubar_u)
-        self.divUH = self.PfromD
+        self.adv_H = self.Ro*self.F*np.diag(self.ubar)
+        self.divUH = self.I
         self.divVH = self.dyC
         self.ten_H = self.F*self.I
 
@@ -876,8 +848,23 @@ class OneLayerJet_TL(object):
         self.ψ = self.X[self.idx_ψ,:]
         self.η = self.X[self.idx_η]
 
-        self.u = self.U/self.hbar_d[:,np.newaxis]
-        self.v = 1j*k*self.ψ/self.hbar_u[:,np.newaxis]
+        self.u = self.U/self.hbar[:,np.newaxis]
+        self.v = 1j*k*self.ψ/self.hbar[:,np.newaxis]
+
+        # put back in jump in u
+        ΔU = self.bg.Δζ*self.ψ[self.N-1,:]/(1 - self.c)
+        Up = self.U[self.N-1,:] + ΔU/2
+        Um = self.U[self.N-1,:] - ΔU/2
+
+        self.U_jump = np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
+        self.U_jump[:self.N-1,:] = self.U[:self.N-1,:]
+        self.U_jump[ self.N-1,:] = Um
+        self.U_jump[ self.N,  :] = Up
+        self.U_jump[self.N+1:,:] = self.U[self.N:,:]
+
+        self.u_jump =  np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
+        self.u_jump[:self.N,:] = self.U_jump[:self.N,:]/self.hbar[:self.N,np.newaxis]
+        self.u_jump[self.N:,:] = self.U_jump[self.N:,:]/self.hbar[self.N-1:,np.newaxis]
 
         return self.c
 
