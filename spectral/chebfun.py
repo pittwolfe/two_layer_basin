@@ -608,7 +608,7 @@ def apply_operator(operator, fld):
     '''
     Ny, Nx = fld.shape
 
-    return np.reshape(operator@fld.flatten(), (Ny, Nx))
+    return np.reshape(operator @ fld.flatten(), (Ny, Nx))
 
 def cheb_int(fld, ω=None, x=None):
     '''
@@ -641,15 +641,21 @@ def TLn(N, L, type='E', second_derivative=False):
         L can be negative. In that case, the grid comes out "backward".
     type : one of {'E', 'R'}, optional
         If `type` is 'E', the points are the extrema of the Chebyshev polynomial. If `type`
-        is `R`, the points are the roots. Note the extrema grid includes the point at infinity, represented as np.inf
+        is `R`, the points are the roots. Note the extrema grid includes the point at infinity,
+        represented as np.inf
+    second_derivative : bool, optional
+        Whether to return the second derivative matrix (see notes).
 
     Returns
     -------
-    x : numpy array
+    x : (N+1,) numpy array
         The grid on the interval [-1, 1].
-    y : numpy array
+    y : (N+1,) numpy array
         The grid on the semi-infinite interval. Includes np.inf if type is 'E'.
-    dy : The derivative matrix. The entries for the point at infinity will be zero.
+    dy : (N+1, N+1) numpy array
+        The derivative matrix. The entries for the point at infinity will be zero.
+    d2y : (N+1, N+1) numpy array, optional
+        The second derivative matrix. Only returned if second_derivative == True
 
     Notes
     -----
@@ -665,6 +671,11 @@ def TLn(N, L, type='E', second_derivative=False):
     Derivatives transform like
         ∂y = (1/y') ∂x
         ∂2y = (1/y')^2 ∂2x - (y''/y'^3) ∂x
+
+    There are two ways to produce the second derivative matrix: either by squaring the
+    first derivative matrix or performing the mapping. The two methods produce results
+    which differ by 2N/L**2, but I'm not sure which should be preferred. This routine
+    returns the second derivative matrix produced by the mapping.
 
     '''
     x = cheb.grid(N, type=type)
