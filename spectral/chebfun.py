@@ -678,13 +678,13 @@ def TLn(N, L, type='E', second_derivative=False):
     returns the second derivative matrix produced by the mapping.
 
     '''
-    x = cheb.grid(N, type=type)
+    x = grid(N, type=type)
 
     y = np.zeros_like(x)
     y[:-1] = L*(1 + x[:-1])/(1 - x[:-1])
     y[-1] = L*np.inf
 
-    dx, d2x = cheb.derivative_matrix(N, source_grid='E', target_grid='E', second_derivative=True)
+    dx, d2x = derivative_matrix(N, source_grid='E', target_grid='E', second_derivative=True)
 
     X = x[:,np.newaxis]
     Q = (X-1)*(X-1)
