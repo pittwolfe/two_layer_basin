@@ -844,27 +844,27 @@ class OneLayerJet_TL(object):
         self.c = self.c[idx]
         self.X = self.X[:,idx]
 
-        self.U = self.X[self.idx_U,:]
+        self.U_nojump = self.X[self.idx_U,:]
         self.ψ = self.X[self.idx_ψ,:]
         self.η = self.X[self.idx_η]
 
-        self.u = self.U/self.hbar[:,np.newaxis]
+        self.u_nojump = self.U_nojump/self.hbar[:,np.newaxis]
         self.v = 1j*k*self.ψ/self.hbar[:,np.newaxis]
 
         # put back in jump in u
         ΔU = self.bg.Δζ*self.ψ[self.N-1,:]/(1 - self.c)
-        Up = self.U[self.N-1,:] + ΔU/2
-        Um = self.U[self.N-1,:] - ΔU/2
+        Up = self.U_nojump[self.N-1,:] + ΔU/2
+        Um = self.U_nojump[self.N-1,:] - ΔU/2
 
-        self.U_jump = np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
-        self.U_jump[:self.N-1,:] = self.U[:self.N-1,:]
-        self.U_jump[ self.N-1,:] = Um
-        self.U_jump[ self.N,  :] = Up
-        self.U_jump[self.N+1:,:] = self.U[self.N:,:]
+        self.U = np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
+        self.U[:self.N-1,:] = self.U_nojump[:self.N-1,:]
+        self.U[ self.N-1,:] = Um
+        self.U[ self.N,  :] = Up
+        self.U[self.N+1:,:] = self.U_nojump[self.N:,:]
 
-        self.u_jump =  np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
-        self.u_jump[:self.N,:] = self.U_jump[:self.N,:]/self.hbar[:self.N,np.newaxis]
-        self.u_jump[self.N:,:] = self.U_jump[self.N:,:]/self.hbar[self.N-1:,np.newaxis]
+        self.u =  np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
+        self.u[:self.N,:] = self.U[:self.N,:]/self.hbar[:self.N,np.newaxis]
+        self.u[self.N:,:] = self.U[self.N:,:]/self.hbar[self.N-1:,np.newaxis]
 
         return self.c
 
