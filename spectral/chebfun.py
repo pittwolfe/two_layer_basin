@@ -590,11 +590,32 @@ def clenshaw_curtis_weight(N, x1=-1, x2=1):
     return ω*beta
 
 def apply_operator(operator, fld):
+    '''
+    Apply an matrix operator to a 2D field.
+
+    Parameters
+    ----------
+    operator : 2D ndarray
+        The matrix operator to apply.
+    fld : 2D ndarray
+        The 2D field to which the operator is applied.
+
+    Output
+    ------
+    2D ndarray
+        The 2D field with the operator applied.
+
+    '''
     Ny, Nx = fld.shape
 
     return np.reshape(operator@fld.flatten(), (Ny, Nx))
 
 def cheb_int(fld, ω=None, x=None):
+    '''
+    Integrate a field on a Chebysheb grid using Clenshaw-Curtis weights.
+
+    I am not sure what the argument x is supposed to do.
+    '''
     N = len(fld) - 1
 
     if x is None:
@@ -606,4 +627,63 @@ def cheb_int(fld, ω=None, x=None):
         ω = clenshaw_curtis_weight(N)
 
     return np.sum(ω*fld)
+
+def TLn(N, L, type='E', second_derivative=False):
+    '''
+    Calculate grid and first-order differentiation matrices for the rational Chebyshev functions.
+
+    Parameters
+    ----------
+    N : int
+        Order of the Chebyshev grid.
+    L : float
+        The scale factor. Should be roughly the size of the spatial variation of the solution.
+        L can be negative. In that case, the grid comes out "backward".
+    type : one of {'E', 'R'}, optional
+        If `type` is 'E', the points are the extrema of the Chebyshev polynomial. If `type`
+        is `R`, the points are the roots. Note the extrema grid includes the point at infinity, represented as np.inf
+
+    Returns
+    -------
+    x : numpy array
+        The grid on the interval [-1, 1].
+    y : numpy array
+        The grid on the semi-infinite interval. Includes np.inf if type is 'E'.
+    dy : The derivative matrix. The entries for the point at infinity will be zero.
+
+    Notes
+    -----
+    The rational Chebyshev functions TLn(y) are defined by the map
+        TLn(y) = Tn((y-L)/(y+L))
+    where Tn are the standard Chebyshev polynomials and L can be positive or negative.
+
+    The mapping
+        x = (y-L)/(y+L)  <--> y = L(1+x)/(1-x)
+    transforms the interval x in [-1, 1] to the positive or negative half line, depending
+    on the sign of L.
+
+    Derivatives transform like
+        ∂y = (1/y') ∂x
+        ∂2y = (1/y')^2 ∂2x - (y''/y'^3) ∂x
+
+    '''
+    x = cheb.grid(N, type=type)
+
+    y = np.zeros_like(x)
+    y[:-1] = L*(1 + x[:-1])/(1 - x[:-1])
+    y[-1] = L*np.inf
+
+    dx, d2x = cheb.derivative_matrix(N, source_grid='E', target_grid='E', second_derivative=True)
+
+    X = x[:,np.newaxis]
+    Q = (X-1)*(X-1)
+
+    dy = Q*dx/(2*L)
+
+    if second_derivative:
+        d2y = (Q*d2x + 2*(X-1)*dx)*Q/(4*L**2)
+
+        return x, y, dy, d2y
+    else:
+        return x, y, dy
 
