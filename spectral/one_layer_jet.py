@@ -908,7 +908,7 @@ class OneLayerJet_TL(object):
         return self.c
 
 ##########################################################################################
-class OneLayerJet_TL(object):
+class OneLayerJet_complexTL(object):
     '''
     A class implementing a one-layer Rossby-Zhang jet using the rational Chebyshev functions, TL.
     '''
