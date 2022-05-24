@@ -679,7 +679,6 @@ class OneLayerJet_TL(object):
         else:
             self.mapping_Ls = Ls # mapping scale for the southern domain
 
-
         self.bg = OneLayerJet_BackgroundFlow(self.δ, self.Ro, self.F, self.b)
 
         self.grid_initialized = False
@@ -692,25 +691,40 @@ class OneLayerJet_TL(object):
             raise RuntimeError('Number of grid points must be greater than zero!')
 
         # The suffixes S and N refer to the southern and northern subdomains, respectively.
-        # The x refers to the actual Chebyshev grid and y refers to the mapped grid
-        self.xS, self.yS, self.dyS = cheb.TLn(self.N, -self.mapping_Ls)
-        self.xN, self.yN, self.dyN = cheb.TLn(self.N,  self.mapping_Ln)
+        # The X refers to the actual Chebyshev grid and y refers to the mapped grid
+        self.XS, self.yS, self.dyS = cheb.TLn(self.N, -self.mapping_Ls)
+        self.XN, self.yN, self.dyN = cheb.TLn(self.N,  self.mapping_Ln)
 
         # flip the southern grid and operators around
-        self.xS  = self.xS[::-1]
+        self.XS  = self.XS[::-1]
         self.yS  = self.yS[::-1]
         self.dyS = self.dyS[::-1,::-1]
 
-        # remap xN to [0, 1] and xS to [-1, 0]
-        self.xS = -(self.xS + 1)/2
-        self.xN =  (self.xN + 1)/2
-
+        # remap xN to [0, 1] and xS to [-1, 0] (capitals indicate the original Chebyshev grid)
+        self.xS = -(self.XS + 1)/2
+        self.xN =  (self.XN + 1)/2
 
         # make sure the point at zero is actually at zero
         self.xS[-1] = 0
         self.yS[-1] = 0
         self.xN[ 0] = 0
         self.yN[ 0] = 0
+
+        # The duplicate grid (points at infinity and duplicates 0)
+        self.Xd = np.hstack([self.XS[1:], self.XN[:-1]])
+        self.xd = np.hstack([self.xS[1:], self.xN[:-1]])
+        self.yd = np.hstack([self.yS[1:], self.yN[:-1]])
+
+        # The unique grid (no points at infinity, no duplicates)
+        self.Xu = np.hstack([self.XS[1:], self.XN[1:-1]])
+        self.xu = np.hstack([self.xS[1:], self.xN[1:-1]])
+        self.yu = np.hstack([self.yS[1:], self.yN[1:-1]])
+
+        # make the unique grid the default grid
+        self.X = self.Xu
+        self.x = self.xu
+        self.y = self.yu
+
 
         # projects quantities from the unique grid to the duplicate grid
         self.PtoD_full = np.block([
@@ -759,17 +773,255 @@ class OneLayerJet_TL(object):
         self.idx_ψ = self.idx_U[-1] + 1 + np.arange(2*N-1)
         self.idx_η = self.idx_ψ[-1] + 1 + np.arange(2*N-1)
 
+        self.grid_initialized = True
+
+    def init_background_flow(self):
+        if not self.grid_initialized:
+            self.init_grid()
+
+        # background flow on unique points
+        self.f    = self.bg.f(self.y)
+        self.ubar = self.bg.u(self.y)
+        self.hbar = self.bg.h(self.y)
+        self.ζbar = self.bg.ζ(self.y)
+
+        self.background_flow_initialized = True
+
+    def init_operators(self):
+        '''
+        This method constructs the k-indepdendent parts of the operators.
+        '''
+        if not self.background_flow_initialized:
+            self.init_background_flow()
+
+        # u-equation
+        # Note that the u-equation at y = 0 is the average of the two limits
+        self.adv_U = np.diag(self.Ro*self.ubar)
+        # this is actually the nonlinear coriolis term
+        self.cor_U = -np.diag(self.f + self.Ro*self.ζbar)
+        self.pgf_U = np.diag(self.hbar)
+        self.ten_U = self.I
+
+        # v-equation
+        # Note: the v-equation at y = 0 is the average of the v-equations at 0+ and 0-, using the fact
+        # that v is continuous
+        self.adv_V = -self.Ro*np.diag(self.ubar)  # this term should get multiplied by k**2
+        self.cor_V = np.diag(self.f)
+        self.pgf_V = np.diag(self.hbar) @ self.dyC
+        self.ten_V = -self.I  # this term should get multiplied by k**2
+
+        # η-equation
+        self.adv_H = self.Ro*self.F*np.diag(self.ubar)
+        self.divUH = self.I
+        self.divVH = self.dyC
+        self.ten_H = self.F*self.I
+
+        self.operators_initialized = True
+
+    def modes(self, k, just_c=False, generalized=False):
+        '''
+        Calculate the waves peeds and optionally eigenvectors for a given k.
+
+        Parameters
+        ----------
+        k : float
+            The wavenumber of interest
+        just_c : bool, optional
+            If True, only calculate the wave speeds. This can improve efficiency. Default is False,
+            unless Δ != 0, in which case just_c = True.
+        generalized : bool, optional
+            Whether to use the generalized eigenvalue problem formulation instead of the
+            standard formulation. Slower, but necessary if k == 0 or F == 0. Default is False unless
+            k == 0 or F == 0, in which case generalized = True.
+        '''
+        if not self.operators_initialized:
+            self.init_operators()
+
+        # Solving the problem as a standard eigenvalue problem is much faster, but the system is
+        # difficult to reduce to a standard eigenvalue problem if k == 0.
+        # The case F = 0 can be done, but needs special treatment.
+        if k == 0 or self.F == 0:
+            generalized = True
+
+        if self.just_c:
+            just_c = True
+
+        self.k = k
+
+        if generalized:
+            self.lhs = np.block([
+                [self.adv_U, self.cor_U,      self.pgf_U],
+                [self.cor_V, self.adv_V*k**2, self.pgf_V],
+                [self.divUH, self.divVH,      self.adv_H]
+            ])
+
+            sz = self.idx_η[-1] + 1
+            self.rhs = np.zeros((sz, sz))
+            self.rhs[np.ix_(self.idx_U,self.idx_U)] = self.ten_U
+            self.rhs[np.ix_(self.idx_ψ,self.idx_ψ)] = self.ten_V*k**2
+            self.rhs[np.ix_(self.idx_η,self.idx_η)] = self.ten_H
+        else:
+            self.lhs = np.block([
+                [self.adv_U,        self.cor_U,         self.pgf_U],
+                [-self.cor_V/k**2, -self.adv_V,        -self.pgf_V/k**2],
+                [self.divUH/self.F, self.divVH/self.F,  self.adv_H/self.F]
+            ])
+
+
+        if just_c:
+            if generalized:
+                self.c = sp.linalg.eigvals(self.lhs, self.rhs)
+            else:
+                self.c = np.linalg.eigvals(self.lhs)
+            idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
+            self.c = self.c[idx]
+            idx = np.argsort(self.c.real)
+            self.c = self.c[idx]
+        else:
+            if generalized:
+                self.c, self.evec = sp.linalg.eig(self.lhs, self.rhs)
+            else:
+                self.c, self.evec = np.linalg.eig(self.lhs)
+            # drop the infinite values
+            idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
+            self.c = self.c[idx]
+            self.evec = self.evec[:,idx]
+            Nfinite = len(self.c)
+
+            idx = np.argsort(self.c.real)
+            self.c = self.c[idx]
+            self.evec = self.evec[:,idx]
+
+            self.U_nojump = self.evec[self.idx_U,:]
+            self.ψ = self.evec[self.idx_ψ,:]
+            self.η = self.evec[self.idx_η]
+
+            self.u_nojump = self.U_nojump/self.hbar[:,np.newaxis]
+            self.v = 1j*k*self.ψ/self.hbar[:,np.newaxis]
+
+            # put back in jump in u by evaluating U from the thickness equation
+            self.U = -(self.PtoD @
+                (self.F*(self.Ro*self.ubar[:,np.newaxis] - np.atleast_2d(self.c))*self.η)
+                + self.dyD @ self.ψ)
+            self.u = self.U/(self.PtoD @ self.hbar[:, np.newaxis])
+
+        return self.c
+
+##########################################################################################
+class OneLayerJet_TL(object):
+    '''
+    A class implementing a one-layer Rossby-Zhang jet using the rational Chebyshev functions, TL.
+    '''
+
+    def __init__(self, δ, Ro, F, b, N, Ln, Ls=None, Δ=0):
+        self.δ = δ     # asymmetry parameter
+        self.Ro = Ro   # Rossby number
+        self.F = F     # baroclinic inverse Burger number
+        self.b = b     # beta parameter
+        self.N = N     # order of the Chebyshev grid
+        self.mapping_Ln = Ln # mapping scale for the northern domain
+        if Ls is None:
+            self.mapping_Ls = Ln # mapping scale for the southern domain
+        else:
+            self.mapping_Ls = Ls # mapping scale for the southern domain
+        self.Δ = Δ
+
+        if self.Δ != 0:
+            self.just_c = True
+
+        self.bg = OneLayerJet_BackgroundFlow(self.δ, self.Ro, self.F, self.b)
+
+        self.grid_initialized = False
+        self.background_flow_initialized = False
+        self.operators_initialized = False
+
+    def init_grid(self):
+        N = self.N
+        if (self.N == 0):
+            raise RuntimeError('Number of grid points must be greater than zero!')
+
+        # The suffixes S and N refer to the southern and northern subdomains, respectively.
+        # The X refers to the actual Chebyshev grid and y refers to the mapped grid
+        self.XS, self.yS, self.dyS = cheb.TLn(self.N, -self.mapping_Ls)
+        self.XN, self.yN, self.dyN = cheb.TLn(self.N,  self.mapping_Ln)
+
+        # flip the southern grid and operators around
+        self.XS  = self.XS[::-1]
+        self.yS  = self.yS[::-1]
+        self.dyS = self.dyS[::-1,::-1]
+
+        # remap xN to [0, 1] and xS to [-1, 0] (capitals indicate the original Chebyshev grid)
+        self.xS = -(self.XS + 1)/2
+        self.xN =  (self.XN + 1)/2
+
+        # make sure the point at zero is actually at zero
+        self.xS[-1] = 0
+        self.yS[-1] = 0
+        self.xN[ 0] = 0
+        self.yN[ 0] = 0
+
         # The duplicate grid (points at infinity and duplicates 0)
+        self.Xd = np.hstack([self.XS[1:], self.XN[:-1]])
         self.xd = np.hstack([self.xS[1:], self.xN[:-1]])
         self.yd = np.hstack([self.yS[1:], self.yN[:-1]])
 
         # The unique grid (no points at infinity, no duplicates)
+        self.Xu = np.hstack([self.XS[1:], self.XN[1:-1]])
         self.xu = np.hstack([self.xS[1:], self.xN[1:-1]])
         self.yu = np.hstack([self.yS[1:], self.yN[1:-1]])
 
         # make the unique grid the default grid
+        self.X = self.Xu
         self.x = self.xu
         self.y = self.yu
+
+
+        # projects quantities from the unique grid to the duplicate grid
+        self.PtoD_full = np.block([
+            [np.identity(N+1), np.zeros((N+1, N))],
+            [np.zeros((N+1, N)), np.identity(N+1)]
+        ])
+
+        # projects quantities from the duplicate grid to the unique grid
+        self.PfromD_full = np.block([
+            [np.identity(N+1), np.zeros((N+1, N+1))],
+            [np.zeros((N, N+2)), np.identity(N)]
+        ])
+        self.PfromD_full[N, N  ] = 0.5
+        self.PfromD_full[N, N+1] = 0.5
+
+        # There are two different ways to construct the derivative matrix for functions with continuous derivatives
+        # Picking one or the other leads to weird asymmetries in the derivative matrix, so we average the two together
+        # This turns out to be the same as applying the projection operator to dyD
+        # dyC1 = np.block([[self.dyS, np.zeros((N+1, N))],
+        #                 [np.zeros((N, N)), self.dyN[1:,:]]])
+        # dyC2 = np.block([[self.dyS[:-1,:], np.zeros((N, N))],
+        #                 [np.zeros((N+1, N)), self.dyN]])
+        # self.dyC = (dyC1+dyC2)/2
+
+
+        # This operator is for functions with discontinuous derivatives at y = 0
+        self.dyD_full = np.block([[self.dyS, np.zeros((N+1, N))],
+                                  [np.zeros((N+1, N)), self.dyN]])
+
+        self.dyC_full = self.PfromD_full @ self.dyD_full
+
+        self.dyD = self.dyD_full[1:-1,1:-1]
+        self.dyC = self.dyC_full[1:-1,1:-1]
+        self.PtoD = self.PtoD_full[1:-1,1:-1]
+        self.PfromD = self.PfromD_full[1:-1,1:-1]
+
+        # Various zero and identity matrices
+        self.Z      = np.zeros((2*N-1, 2*N-1))
+        self.ZtoD   = np.zeros((2*N,   2*N-1))
+        self.ZfromD = np.zeros((2*N-1, 2*N))
+
+        self.I  = np.identity(2*N-1)
+        self.ID = np.identity(2*N)
+
+        self.idx_U = np.arange(2*N-1)
+        self.idx_ψ = self.idx_U[-1] + 1 + np.arange(2*N-1)
+        self.idx_η = self.idx_ψ[-1] + 1 + np.arange(2*N-1)
 
         self.grid_initialized = True
 
@@ -816,57 +1068,96 @@ class OneLayerJet_TL(object):
 
         self.operators_initialized = True
 
-    def modes(self, k):
+    def modes(self, k, just_c=False, generalized=False):
+        '''
+        Calculate the waves peeds and optionally eigenvectors for a given k.
+
+        Parameters
+        ----------
+        k : float
+            The wavenumber of interest
+        just_c : bool, optional
+            If True, only calculate the wave speeds. This can improve efficiency. Default is False,
+            unless Δ != 0, in which case just_c = True.
+        generalized : bool, optional
+            Whether to use the generalized eigenvalue problem formulation instead of the
+            standard formulation. Slower, but necessary if k == 0 or F == 0. Default is False unless
+            k == 0 or F == 0, in which case generalized = True.
+        '''
         if not self.operators_initialized:
             self.init_operators()
 
+        # Solving the problem as a standard eigenvalue problem is much faster, but the system is
+        # difficult to reduce to a standard eigenvalue problem if k == 0.
+        # The case F = 0 can be done, but needs special treatment.
+        if k == 0 or self.F == 0:
+            generalized = True
+
+        if self.just_c:
+            just_c = True
+
         self.k = k
 
-        lhs = np.block([
-            [self.adv_U, self.cor_U,      self.pgf_U],
-            [self.cor_V, self.adv_V*k**2, self.pgf_V],
-            [self.divUH, self.divVH,      self.adv_H]
-        ])
+        if generalized:
+            self.lhs = np.block([
+                [self.adv_U, self.cor_U,      self.pgf_U],
+                [self.cor_V, self.adv_V*k**2, self.pgf_V],
+                [self.divUH, self.divVH,      self.adv_H]
+            ])
 
-        sz = self.idx_η[-1] + 1
-        rhs = np.zeros((sz, sz))
-        rhs[np.ix_(self.idx_U,self.idx_U)] = self.ten_U
-        rhs[np.ix_(self.idx_ψ,self.idx_ψ)] = self.ten_V*k**2
-        rhs[np.ix_(self.idx_η,self.idx_η)] = self.ten_H
+            sz = self.idx_η[-1] + 1
+            self.rhs = np.zeros((sz, sz))
+            self.rhs[np.ix_(self.idx_U,self.idx_U)] = self.ten_U
+            self.rhs[np.ix_(self.idx_ψ,self.idx_ψ)] = self.ten_V*k**2
+            self.rhs[np.ix_(self.idx_η,self.idx_η)] = self.ten_H
+        else:
+            self.lhs = np.block([
+                [self.adv_U,        self.cor_U,         self.pgf_U],
+                [-self.cor_V/k**2, -self.adv_V,        -self.pgf_V/k**2],
+                [self.divUH/self.F, self.divVH/self.F,  self.adv_H/self.F]
+            ])
 
-        self.c, self.X = sp.linalg.eig(lhs, rhs)
-#         # idx = np.isfinite(λ)
-#         # λ = λ[idx]
-#         # X = X[:,idx]
-#         # c = λ/self.Ro
 
-        idx = np.argsort(self.c.real)
-        self.c = self.c[idx]
-        self.X = self.X[:,idx]
+        if just_c:
+            if generalized:
+                self.c = sp.linalg.eigvals(self.lhs, self.rhs)
+            else:
+                self.c = np.linalg.eigvals(self.lhs)
+            idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
+            self.c = self.c[idx]
+            idx = np.argsort(self.c.real)
+            self.c = self.c[idx]
+        else:
+            if generalized:
+                self.c, self.evec = sp.linalg.eig(self.lhs, self.rhs)
+            else:
+                self.c, self.evec = np.linalg.eig(self.lhs)
+            # drop the infinite values
+            idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
+            self.c = self.c[idx]
+            self.evec = self.evec[:,idx]
+            Nfinite = len(self.c)
 
-        self.U_nojump = self.X[self.idx_U,:]
-        self.ψ = self.X[self.idx_ψ,:]
-        self.η = self.X[self.idx_η]
+            idx = np.argsort(self.c.real)
+            self.c = self.c[idx]
+            self.evec = self.evec[:,idx]
 
-        self.u_nojump = self.U_nojump/self.hbar[:,np.newaxis]
-        self.v = 1j*k*self.ψ/self.hbar[:,np.newaxis]
+            self.U_nojump = self.evec[self.idx_U,:]
+            self.ψ = self.evec[self.idx_ψ,:]
+            self.η = self.evec[self.idx_η]
 
-        # put back in jump in u
-        ΔU = self.bg.Δζ*self.ψ[self.N-1,:]/(1 - self.c)
-        Up = self.U_nojump[self.N-1,:] + ΔU/2
-        Um = self.U_nojump[self.N-1,:] - ΔU/2
+            self.u_nojump = self.U_nojump/self.hbar[:,np.newaxis]
+            self.v = 1j*k*self.ψ/self.hbar[:,np.newaxis]
 
-        self.U = np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
-        self.U[:self.N-1,:] = self.U_nojump[:self.N-1,:]
-        self.U[ self.N-1,:] = Um
-        self.U[ self.N,  :] = Up
-        self.U[self.N+1:,:] = self.U_nojump[self.N:,:]
+            # put back in jump in u by evaluating U from the thickness equation
+            self.U = -(self.PtoD @
+                (self.F*(self.Ro*self.ubar[:,np.newaxis] - np.atleast_2d(self.c))*self.η)
+                + self.dyD @ self.ψ)
+            self.u = self.U/(self.PtoD @ self.hbar[:, np.newaxis])
 
-        self.u =  np.zeros((2*self.N, 3*(2*self.N-1)), dtype=complex)
-        self.u[:self.N,:] = self.U[:self.N,:]/self.hbar[:self.N,np.newaxis]
-        self.u[self.N:,:] = self.U[self.N:,:]/self.hbar[self.N-1:,np.newaxis]
 
         return self.c
+
 
 
 ##########################################################################################
@@ -887,9 +1178,9 @@ def normalize(u, v, η):
 
     return norm*u, norm*v, norm*η
 
-def winnow(k, jet1, jet2):
-    c1 = jet1.modes(k)
-    c2 = jet2.modes(k)
+def winnow(k, jet1, jet2, tol=1e-6):
+    c1 = jet1.modes(k, just_c=True)
+    c2 = jet2.modes(k, just_c=True)
 
     # intermodal separation
     σ = np.zeros_like(c1, dtype=float)
@@ -900,6 +1191,6 @@ def winnow(k, jet1, jet2):
     idx_nearest = np.argmin(np.abs(np.atleast_2d(c1).T - np.atleast_2d(c2)), axis=1)
     δ_nearest = np.min(np.abs(np.atleast_2d(c1).T - np.atleast_2d(c2)), axis=1)/σ
 
-    idx1_good = np.nonzero(δ_nearest < 1e-6)[0]
+    idx1_good = np.nonzero(δ_nearest < tol)[0]
 
     return c1[idx1_good]
