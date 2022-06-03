@@ -3,7 +3,9 @@
 # Created May 19, 2022 by Christopher L.P. Wolfe (christopher.wolfe@stonybrook.edu)
 
 import numpy as np
+from numpy import pi as π
 import scipy as sp
+import matplotlib.pyplot as plt
 
 from . import chebfun as cheb
 
@@ -15,7 +17,10 @@ class OneLayerJet_BackgroundFlow(object):
         self.F = F     # baroclinic inverse Burger number
         self.b = b     # beta parameter
 
-        self.Δζ = 2/(1 - self.δ**2) # The jump in ζ at y = 0.
+        if np.abs(self.δ) != 1:
+            self.Δζ = 2/(1 - self.δ**2) # The jump in ζ at y = 0.
+        else:
+            self.Δζ = np.inf
 
     def f(self, y):
         if self.b == 0:
@@ -26,23 +31,24 @@ class OneLayerJet_BackgroundFlow(object):
     def u(self, y):
         δ = self.δ
 
+        u = np.zeros_like(y)
         if δ < 1:
-            u = np.exp(-np.abs(y)/(1-np.sign(y)*δ))
+            u[y.real < 0] = np.exp( y[y.real < 0]/(1+δ))
+            u[y.real > 0] = np.exp(-y[y.real > 0]/(1-δ))
             u[y == 0] = 1
         else:
-            u = np.zeros_like(y)
-            u[y<=0] = np.exp(-np.abs(y[y<=0])/2)
+            u[y.real <= 0] = np.exp(y[y.real <= 0]/2)
 
         return u
 
     def dudy_south(self, y):
         ret = np.exp(y/(1+self.δ))/(1+self.δ)
-        ret[y > 0] = np.nan
+        ret[y.real > 0] = np.nan
         return ret
 
     def dudy_north(self, y):
         ret = -np.exp(-y/(1-self.δ))/(1-self.δ)
-        ret[y < 0] = np.nan
+        ret[y.real < 0] = np.nan
         return ret
 
     def u_inv_south(self, Y):
@@ -61,7 +67,7 @@ class OneLayerJet_BackgroundFlow(object):
 
     def u_inv_north(self, Y):
         if not isinstance(Y, np.ndarray):
-            Y = np.array(Y, dtype=float)
+            Y = np.array(Y, dtype=type(Y + 0.0))
 
         Y = np.abs(Y)
         δ = self.δ
@@ -79,7 +85,7 @@ class OneLayerJet_BackgroundFlow(object):
         b = self.b
 
         f = self.f(y)
-        S = np.sign(y)
+        S = np.sign(y.real)
         u = self.u(y)
 
         η = -(u*(δ - S)*(f - b*Ro*(δ - S)) + S + 2*(1 - S)*b*Ro*δ)
@@ -95,7 +101,7 @@ class OneLayerJet_BackgroundFlow(object):
         This is a discontinuous version of ζ with a jump at y = 0.
         '''
         δ = self.δ
-        S = np.sign(y)
+        S = np.sign(y.real)
 
         if (δ < 1):
             ζ = self.u(y)/(S - δ)
@@ -115,11 +121,11 @@ class OneLayerJet_BackgroundFlow(object):
 
         ζ = np.zeros_like(y)
         if (δ < 1):
-            ζ[y < 0] = -self.u(y[y < 0])/(1+δ)
-            ζ[y > 0] =  self.u(y[y > 0])/(1-δ)
+            ζ[y.real < 0] = -self.u(y[y.real < 0])/(1+δ)
+            ζ[y.real > 0] =  self.u(y[y.real > 0])/(1-δ)
             ζ[y == 0] = δ/(1-δ**2)
         else:
-            ζ[y < 0] = -self.u(y[y<0])/2
+            ζ[y.real < 0] = -self.u(y[y.real<0])/2
             ζ[y==0] = -1/4
 
         return ζ
@@ -843,9 +849,6 @@ class OneLayerJet_TL(object):
         if k == 0 or self.F == 0:
             generalized = True
 
-        if self.just_c:
-            just_c = True
-
         self.k = k
 
         if generalized:
@@ -908,6 +911,7 @@ class OneLayerJet_TL(object):
         return self.c
 
 ##########################################################################################
+# This one doesn't work!
 class OneLayerJet_complexTL(object):
     '''
     A class implementing a one-layer Rossby-Zhang jet using the rational Chebyshev functions, TL.
@@ -935,6 +939,18 @@ class OneLayerJet_complexTL(object):
         self.background_flow_initialized = False
         self.operators_initialized = False
 
+        print("Warning: This class doesn't work yet!")
+
+    def complex_map(self, z, Δ):
+        return z + 1j*Δ*(z**2 - 1)
+
+    def rational_map(self, x, L):
+        y = np.zeros_like(x)
+        y[x != 1] = L*(1 + x[x != 1])/(1 - x[x != 1])
+        y[x == 1] = L*np.inf
+
+        return y
+
     def init_grid(self):
         N = self.N
         if (self.N == 0):
@@ -944,6 +960,16 @@ class OneLayerJet_complexTL(object):
         # The X refers to the actual Chebyshev grid and y refers to the mapped grid
         self.XS, self.yS, self.dyS = cheb.TLn(self.N, -self.mapping_Ls)
         self.XN, self.yN, self.dyN = cheb.TLn(self.N,  self.mapping_Ln)
+
+        # Apply complex map
+        self.XS = self.XS - 1j*self.Δ*(self.XS**2 - 1)
+        self.dyS = 1/(1 - 2j*self.Δ*self.XS[:,np.newaxis])*self.dyS
+        self.yS = self.rational_map(self.XS, -self.mapping_Ls)
+
+        self.dyN = 1/(1 + 2j*self.Δ*self.XN[:,np.newaxis])*self.dyN
+        self.XN = self.XN + 1j*self.Δ*(self.XN**2 - 1)
+        self.yN = self.rational_map(self.XN,  self.mapping_Ln)
+
 
         # flip the southern grid and operators around
         self.XS  = self.XS[::-1]
@@ -1068,9 +1094,9 @@ class OneLayerJet_complexTL(object):
 
         self.operators_initialized = True
 
-    def modes(self, k, just_c=False, generalized=False):
+    def modes(self, k, generalized=False):
         '''
-        Calculate the waves peeds and optionally eigenvectors for a given k.
+        Calculate the waves speeds for a given k.
 
         Parameters
         ----------
@@ -1093,9 +1119,6 @@ class OneLayerJet_complexTL(object):
         if k == 0 or self.F == 0:
             generalized = True
 
-        if self.just_c:
-            just_c = True
-
         self.k = k
 
         if generalized:
@@ -1110,6 +1133,8 @@ class OneLayerJet_complexTL(object):
             self.rhs[np.ix_(self.idx_U,self.idx_U)] = self.ten_U
             self.rhs[np.ix_(self.idx_ψ,self.idx_ψ)] = self.ten_V*k**2
             self.rhs[np.ix_(self.idx_η,self.idx_η)] = self.ten_H
+
+            self.c = sp.linalg.eigvals(self.lhs, self.rhs)
         else:
             self.lhs = np.block([
                 [self.adv_U,        self.cor_U,         self.pgf_U],
@@ -1117,21 +1142,232 @@ class OneLayerJet_complexTL(object):
                 [self.divUH/self.F, self.divVH/self.F,  self.adv_H/self.F]
             ])
 
+            self.c = np.linalg.eigvals(self.lhs)
+
+        idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
+        self.c = self.c[idx]
+        idx = np.argsort(self.c.real)
+        self.c = self.c[idx]
+
+
+        return self.c
+
+
+##########################################################################################
+# Pseudospectral version
+# For this one, we evaluate the v equation on a grid that contains two fewer points and impose continuity of v and η.
+class OneLayerJet_TL_PS(object):
+    '''
+    A class implementing a one-layer Rossby-Zhang jet using the rational Chebyshev functions, TL.
+    '''
+
+    def __init__(self, δ, Ro, F, b, N, L):
+        self.δ = δ     # asymmetry parameter
+        self.Ro = Ro   # Rossby number
+        self.F = F     # baroclinic inverse Burger number
+        self.b = b     # beta parameter
+        self.N = N     # order of the Chebyshev grid
+        self.mapping_Ln = L*(1-self.δ) # mapping scale for the northern domain
+        self.mapping_Ls = L*(1+self.δ) # mapping scale for the southern domain
+
+        self.bg = OneLayerJet_BackgroundFlow(self.δ, self.Ro, self.F, self.b)
+
+        self.grid_initialized = False
+        self.background_flow_initialized = False
+        self.operators_initialized = False
+        self.have_modes = False
+
+    def init_grid(self):
+        N = self.N
+        if (self.N == 0):
+            raise RuntimeError('Number of grid points must be greater than zero!')
+
+        # The suffixes S and N refer to the southern and northern subdomains, respectively.
+        # The X refers to the actual Chebyshev grid and y refers to the mapped grid
+        # We put V on a slightly different grid and the others on the Gauss grid
+        self.XS = cheb.chebyshev_grid(self.N, grid_type='G')
+        self.yS = cheb.rational_chebyshev_grid(self.N, -self.mapping_Ls, grid_type='G')
+        self.XN = cheb.chebyshev_grid(self.N, grid_type='G')
+        self.yN = cheb.rational_chebyshev_grid(self.N,  self.mapping_Ln, grid_type='G')
+
+        # Following Boyd (1987) equation (5.5) ...
+        i = np.arange(self.N)
+        x = cheb.chebyshev_grid(self.N, grid_type='G*')
+        self.XS_v = x
+        self.yS_v = -self.mapping_Ls*(1 + x)/(1 - x)
+        self.XN_v = x
+        self.yN_v = self.mapping_Ln*(1 + x)/(1 - x)
+
+        # flip the southern grid around
+        self.XS   = self.XS[::-1]
+        self.yS   = self.yS[::-1]
+        self.XS_v = self.XS_v[::-1]
+        self.yS_v = self.yS_v[::-1]
+
+        # remap xN to [0, 1] and xS to [-1, 0] (capitals indicate the original Chebyshev grid)
+        self.xS = -(self.XS + 1)/2
+        self.xN =  (self.XN + 1)/2
+        self.xS_v = -(self.XS_v + 1)/2
+        self.xN_v =  (self.XN_v + 1)/2
+
+        # Get the rational Chebyshev functions
+        self.TL_S, self.TLy_S, _ = cheb.rational_chebyshev(self.N, self.yS, -self.mapping_Ls)
+        self.TL_N, self.TLy_N, _ = cheb.rational_chebyshev(self.N, self.yN,  self.mapping_Ln)
+
+        # Get the rational Chebyshev functions on v-points
+        self.TL_S_v, self.TLy_S_v, _ = cheb.rational_chebyshev(self.N, self.yS_v, -self.mapping_Ls)
+        self.TL_N_v, self.TLy_N_v, _ = cheb.rational_chebyshev(self.N, self.yN_v,  self.mapping_Ln)
+
+        # Various zero and identity matrices
+        self.Z = np.zeros((N+1, N+1))
+        self.I = np.identity(N+1)
+
+        # Build the joint basis
+        self.TL = np.block([
+            [self.TL_S, self.Z],
+            [self.Z,    self.TL_N]
+        ])
+
+        self.TLy = np.block([
+            [self.TLy_S, self.Z],
+            [self.Z,     self.TLy_N]
+        ])
+
+        self.TL_v = np.block([
+            [self.TL_S_v,   self.Z[:-1,:]],
+            [self.Z[:-1,:], self.TL_N_v]
+        ])
+
+        self.TLy_v = np.block([
+            [self.TLy_S_v,   self.Z[:-1,:]],
+            [self.Z[:-1,:], self.TLy_N_v]
+        ])
+
+        C, Cinv = cheb.chebyshev_transform(self.N, grid_type='G')
+        self.TLinv = np.block([
+            [C[:,::-1], np.zeros((N+1, N+1))],
+            [np.zeros((N+1, N+1)), C]
+        ])
+
+        # The merged grid
+        self.X = np.hstack([self.XS, self.XN])
+        self.x = np.hstack([self.xS, self.xN])
+        self.y = np.hstack([self.yS, self.yN])
+
+        self.X_v = np.hstack([self.XS_v, self.XN_v])
+        self.x_v = np.hstack([self.xS_v, self.xN_v])
+        self.y_v = np.hstack([self.yS_v, self.yN_v])
+
+        self.idx_U = np.arange(2*self.N+2)
+        self.idx_ψ = self.idx_U[-1] + 1 + np.arange(2*self.N+2)
+        self.idx_η = self.idx_ψ[-1] + 1 + np.arange(2*self.N+2)
+
+        self.grid_initialized = True
+
+    def init_background_flow(self):
+        if not self.grid_initialized:
+            self.init_grid()
+
+        # background flow on unique points
+        self.f    = self.bg.f(self.y)
+        self.ubar = self.bg.u(self.y)
+        self.hbar = self.bg.h(self.y)
+        self.ζbar = self.bg.ζ(self.y)
+        self.qbar = (self.f + self.Ro*self.ζbar)/self.hbar
+
+        self.f_v    = self.bg.f(self.y_v)
+        self.ubar_v = self.bg.u(self.y_v)
+        self.hbar_v = self.bg.h(self.y_v)
+
+        self.background_flow_initialized = True
+
+    def derivative(self, F, grid_type='G'):
+        '''
+        Calculate the derivative of a grid point function by transforming and transforming back.
+        '''
+        if not self.grid_initialized:
+            self.init_grid()
+
+        return self.TLy @ self.TLinv @ F
+
+    def init_operators(self):
+        '''
+        This method constructs the k-indepdendent parts of the operators.
+        '''
+        if not self.background_flow_initialized:
+            self.init_background_flow()
+
+        # u-equation
+        self.adv_U = self.Ro*self.ubar[:,np.newaxis]*self.TL
+        # this is actually the nonlinear coriolis term
+        self.cor_U = -(self.f + self.Ro*self.ζbar)[:,np.newaxis]*self.TL
+        self.pgf_U = self.hbar[:,np.newaxis]*self.TL
+        self.ten_U = self.TL
+
+        # v-equation
+        self.adv_V = -self.Ro*self.ubar_v[:,np.newaxis]*self.TL_v  # this term should get multiplied by k**2
+        self.cor_V = self.f_v[:,np.newaxis]*self.TL_v
+        self.pgf_V = self.hbar_v[:,np.newaxis] * self.TLy_v
+        self.ten_V = -self.TL_v  # this term should get multiplied by k**2
+
+        # η-equation
+        self.adv_H = self.Ro*self.F*self.ubar[:,np.newaxis]*self.TL
+        self.divUH = self.TL
+        self.divVH = self.TLy
+        self.ten_H = self.F*self.TL
+
+        self.operators_initialized = True
+
+    def modes(self, k, just_c=False, bcpoint='v'):
+        '''
+        Calculate the waves peeds and optionally eigenvectors for a given k.
+
+        Parameters
+        ----------
+        k : float
+            The wavenumber of interest
+        just_c : bool, optional
+            If True, only calculate the wave speeds. This can improve efficiency. Default is False,
+            unless Δ != 0, in which case just_c = True.
+        '''
+        if not self.operators_initialized:
+            self.init_operators()
+
+        self.k = k
+
+        if self.k <= 1:
+            kfac1 = k**2
+            kfac2 = 1
+        else:
+            kfac1 = 1
+            kfac2 = 1/k**2
+
+        # Enforce continuity of ψ and η at a ψ grid point far from the origin
+        TL0_S, _, _ = cheb.rational_chebyshev(self.N, 0, -self.mapping_Ls)
+        TL0_N, _, _ = cheb.rational_chebyshev(self.N, 0,  self.mapping_Ln)
+
+        self.lhs = np.block([
+            [self.adv_U,       self.cor_U,       self.pgf_U],
+            [kfac2*self.cor_V, kfac1*self.adv_V, kfac2*self.pgf_V],
+            [np.zeros(2*self.N+2), TL0_S, -TL0_N, np.zeros(2*self.N+2)], # boundary conditions
+            [np.zeros(2*self.N+2), np.zeros(2*self.N+2), TL0_S, -TL0_N],
+            [self.divUH,       self.divVH,       self.adv_H]
+        ])
+
+        sz = self.idx_η[-1] + 1
+        self.rhs = np.zeros((sz, sz))
+        self.rhs[np.ix_(self.idx_U,self.idx_U)] = self.ten_U
+        self.rhs[np.ix_(self.idx_ψ[:-2],self.idx_ψ)] = self.ten_V*kfac1
+        self.rhs[np.ix_(self.idx_η,self.idx_η)] = self.ten_H
 
         if just_c:
-            if generalized:
-                self.c = sp.linalg.eigvals(self.lhs, self.rhs)
-            else:
-                self.c = np.linalg.eigvals(self.lhs)
+            self.c = sp.linalg.eigvals(self.lhs, self.rhs)
             idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
             self.c = self.c[idx]
             idx = np.argsort(self.c.real)
             self.c = self.c[idx]
         else:
-            if generalized:
-                self.c, self.evec = sp.linalg.eig(self.lhs, self.rhs)
-            else:
-                self.c, self.evec = np.linalg.eig(self.lhs)
+            self.c, self.evec = sp.linalg.eig(self.lhs, self.rhs)
             # drop the infinite values
             idx = np.isfinite(self.c) & (np.abs(self.c) < 1e8)
             self.c = self.c[idx]
@@ -1142,23 +1378,186 @@ class OneLayerJet_complexTL(object):
             self.c = self.c[idx]
             self.evec = self.evec[:,idx]
 
-            self.U_nojump = self.evec[self.idx_U,:]
-            self.ψ = self.evec[self.idx_ψ,:]
-            self.η = self.evec[self.idx_η]
+            # spectral coefficients
+            self.Uhat = self.evec[self.idx_U,:]
+            self.ψhat = self.evec[self.idx_ψ,:]
+            self.ηhat = self.evec[self.idx_η,:]
 
-            self.u_nojump = self.U_nojump/self.hbar[:,np.newaxis]
+            self.U = self.TL @ self.Uhat
+            self.ψ = self.TL @ self.ψhat
+            self.η = self.TL @ self.ηhat
+
+            self.u = self.U/self.hbar[:,np.newaxis]
             self.v = 1j*k*self.ψ/self.hbar[:,np.newaxis]
 
-            # put back in jump in u by evaluating U from the thickness equation
-            self.U = -(self.PtoD @
-                (self.F*(self.Ro*self.ubar[:,np.newaxis] - np.atleast_2d(self.c))*self.η)
-                + self.dyD @ self.ψ)
-            self.u = self.U/(self.PtoD @ self.hbar[:, np.newaxis])
-
+            self.have_modes = True
 
         return self.c
 
+    ############### plotting routines ################
+    def plot_mode_real_imag(self, idx):
+        if not self.have_modes:
+            raise RuntimeError("Need calculate modes using the 'modes' method before plotting them!")
 
+        sym = '-'
+
+        y = self.y
+
+        fig, axs = plt.subplots(ncols=3, sharey=True, sharex=False, figsize=(6.5, 5))
+
+        u, v, η = normalize(self.u[:,idx], self.v[:,idx], self.η[:,idx])
+
+        ax = axs[0]
+        ax.plot(u.real, y, sym, label='real')
+        ax.plot(u.imag, y, sym, label='imag')
+        ax.set_ylabel('$y$')
+        ax.set_xlabel('$u$')
+        ax.set_xlim(-1, 1)
+        ax.text(.075, .975, '  $\delta = {:.1f}$\n  $F = {:.1f}$\n$\mathrm{{Ro}} = {:.1f}$\n  $b = {:.1f}$'.format(
+                self.δ, self.F, self.Ro, self.b),
+                va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
+
+        ax = axs[1]
+        ax.plot(v.real, y, sym)
+        ax.plot(v.imag, y, sym)
+        ax.set_xlabel('$v$')
+        ax.set_xlim(-1, 1)
+
+        ax = axs[2]
+        ax.plot(η.real, y, sym, label='real')
+        ax.plot(η.imag, y, sym, label='imag')
+        ax.set_xlabel('$\eta$')
+        ax.text(.55, .975, '$k = {:.1f}$\n$\sigma = {:.3f}$\n$c_r = {:.2f}$'.format(
+            self.k, self.k*self.c[idx].imag, self.c[idx].real),
+                va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
+
+
+        for ax in axs:
+            ax.grid()
+            ax.set_ylim([-3, 3])
+
+        fig.tight_layout()
+
+        return fig
+
+
+    def plot_mode_2d(self, idx, ymax=2, Nlevel=31, NX=101):
+        if not self.have_modes:
+            raise RuntimeError("Need calculate modes using the 'modes' method before plotting them!")
+
+        fig, axs = plt.subplots(ncols=3, sharey=True, sharex=True, figsize=(6.5, 6))
+
+        y = self.y
+        ixy = np.abs(y) < 1.5*ymax
+        y = y[ixy]
+
+        u, v, η = normalize(self.u[:,idx], self.v[:,idx], self.η[:,idx])
+
+        u = u[ixy][:,np.newaxis]
+        v = v[ixy][:,np.newaxis]
+        η = η[ixy][:,np.newaxis]
+
+        NY = u.shape[0]
+
+        x = np.linspace(0, 2*π, NX)
+
+        u2d = (u*np.exp(1j*x)).real
+        v2d = (v*np.exp(1j*x)).real
+        η2d = (η*np.exp(1j*x)).real
+
+        vmax = 1
+        levels = np.linspace(-vmax, vmax, Nlevel)
+
+        ax = axs[0]
+        cs = ax.contourf(x, y, u2d, levels=levels, vmin=-vmax, vmax=vmax, cmap='RdBu_r')
+        ax.contour(x, y, u2d, levels=[0], colors='k', linewidths=.5)
+        fig.colorbar(cs, ax=ax, orientation='horizontal', pad=.025, ticks=np.arange(-1, 1.1, .5), location='top',
+                    label='$u$')
+        ax.set_ylabel('$y$')
+        ax.text(.075, .975, '  $\delta = {:.1f}$\n  $F = {:.1f}$\n$\mathrm{{Ro}} = {:.1f}$\n  $b = {:.1f}$'.format(
+                self.δ, self.F, self.Ro, self.b),
+                va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
+
+        ax = axs[1]
+        cs = ax.contourf(x, y, v2d, levels=levels, vmin=-vmax, vmax=vmax, cmap='RdBu_r')
+        ax.contour(x, y, v2d, levels=[0], colors='k', linewidths=.5)
+        fig.colorbar(cs, ax=ax, orientation='horizontal', pad=.025, ticks=np.arange(-1, 1.1, .5), location='top',
+                    label='$v$')
+        ax.text(.075, .975, '$k = {:.1f}$\n$\sigma = {:.3f}$\n$c_r = {:.2f}$'.format(
+            self.k, self.k*self.c[idx].imag, self.c[idx].real),
+                va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
+
+        ax = axs[2]
+        vmax = np.abs(η2d).max()
+        levels = np.linspace(-vmax, vmax, Nlevel)
+        cs = ax.contourf(x, y, η2d, levels=levels, vmin=-vmax, vmax=vmax, cmap='RdBu_r')
+        ax.contour(x, y, η2d, levels=[0], colors='k', linewidths=.5)
+        fig.colorbar(cs, ax=ax, orientation='horizontal', pad=.025, ticks=integer_ticks(vmax, spacing=.25), location='top',
+                    label='$\eta$')
+
+        for ax in axs:
+            ax.set_ylim(-ymax, ymax)
+            ax.set_xlabel('$kx$')
+            ax.set_xticks(np.arange(0, 2.1, .5)*π, labels=['$0$', '$\pi/2$', '$\pi$', '$3\pi/2$', '$2\pi$'])
+
+        fig.tight_layout()
+        return fig
+
+
+    def plot_mode_energetics(self, idx, ymax=2):
+        if not self.have_modes:
+            raise RuntimeError("Need calculate modes using the 'modes' method before plotting them!")
+
+        fig, axs = plt.subplots(ncols=3, sharey=True, sharex=False, figsize=(6.5, 5))
+
+        y = self.y
+
+        u, v, η = normalize(self.u[:,idx], self.v[:,idx], self.η[:,idx])
+
+        Ku = self.hbar*np.abs(u)**2/2
+        Kv = self.hbar*np.abs(v)**2/2
+        APE = self.F*np.abs(η)**2/2
+        total = Ku + Kv + APE
+
+        uv = 0.5*(u*np.conj(v)).real
+        conv = self.Ro*self.hbar*self.ζbar*uv
+
+        norm = 1/np.max(total)
+        Ku = norm*Ku
+        Kv = norm*Kv
+        APE = norm*APE
+        total = norm*total
+        uv = norm*uv
+        conv = norm*conv
+
+        ax = axs[0]
+        ax.plot(Ku + Kv, y, label='KE')
+        ax.plot(APE, y, label='APE')
+        ax.plot(Ku + Kv + APE, y, label='total')
+        ax.legend()
+        ax.set_xlabel('energy')
+        ax.set_ylabel('$y$')
+
+        ax = axs[1]
+        ax.plot(uv, y)
+        ax.set_xlabel("$\overline{u'v'}$")
+        ax.text(.55, .975, '  $\delta = {:.1f}$\n  $F = {:.1f}$\n$\mathrm{{Ro}} = {:.1f}$\n  $b = {:.1f}$'.format(
+                self.δ, self.F, self.Ro, self.b),
+                va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
+
+        ax = axs[2]
+        ax.plot(conv, y)
+        ax.set_xlabel(r"$-\mathrm{Ro}\,\bar{h}\bar{u}_y\overline{u'v'}$")
+        ax.text(.5, .975, '$k = {:.1f}$\n$\sigma = {:.3f}$\n$c_r = {:.2f}$'.format(
+            self.k, self.k*self.c[idx].imag, self.c[idx].real),
+                va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
+
+        for ax in axs:
+            ax.grid()
+            ax.set_ylim([-ymax, ymax])
+
+        fig.tight_layout()
+        return fig
 
 ##########################################################################################
 # Utility functions
@@ -1194,3 +1593,31 @@ def winnow(k, jet1, jet2, tol=1e-6):
     idx1_good = np.nonzero(δ_nearest < tol)[0]
 
     return c1[idx1_good]
+
+def integer_ticks(vmax, symmetric=True, spacing=None, nticks=None):
+    '''
+    Returns an array with ticks spaced by an integer and centered around zero.
+
+    nticks is the number of non-negative ticks
+    '''
+
+    if spacing is not None and nticks is not None:
+        raise RuntimeError("Can't specify both spacing and nticks")
+
+    if spacing is not None:
+        if symmetric:
+            vmin = -np.floor(vmax/spacing)*spacing
+        else:
+            vmin = 0
+
+        return np.arange(vmin, vmax*(1 + .01), spacing)
+
+    if nticks is None:
+        nticks = 4
+
+    spacing = np.ceil(vmax/nticks)
+    if symmetric:
+        vmin = -np.floor(vmax/spacing)*spacing
+    else:
+        vmin = 0
+    return np.arange(vmin, vmax*(1 + .01), spacing)
