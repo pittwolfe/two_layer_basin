@@ -5,6 +5,7 @@
 import numpy as np
 import scipy as sp
 from numpy import pi
+π = pi
 from scipy.fftpack import dct, dctn
 
 def grid(N, type='E', x1=-1, x2=1):
@@ -48,6 +49,138 @@ def grid(N, type='E', x1=-1, x2=1):
         RuntimeError('Unknown grid type.')
 
     return x
+
+# This one doesn't do scaling, but supports more grid types.
+def chebyshev_grid(N, grid_type='L'):
+    '''
+    Chebyshev grid.
+
+    Parameters
+    ----------
+    N : int
+        Order of the grid.
+    grid_type : character, optional
+        One of 'L' for Lobatto, 'R' for Radau, and 'G' for Gauss, 'G*' for modified Gauss. Default is 'L'.
+
+    Returns
+    -------
+    x : N+1 array
+        The grid.
+
+    Notes
+    -----
+    The G* grid is just a Gauss grid with one fewer point, so
+        chebyshev_grid(N, grid_type='G*') = chebyshev_grid(N-1, grid_type='G').
+    '''
+
+    j = np.arange(N+1)
+
+    if grid_type.upper() == 'L':
+        return -np.cos(j*π/N)
+    elif grid_type.upper() == 'G':
+        return -np.cos((2*j + 1)*π/(2*N+2))
+    elif grid_type.upper() == 'G*':
+        # Following Boyd (1987) equation (5.5) ...
+        i = np.arange(N)
+        return -np.cos(π*(2*i+1)/(2*N))
+    elif grid_type.upper() == 'R':
+        return -np.cos(2*j*π/(2*N+1))
+    else:
+        raise ValueError('Unknown grid type ' + grid_type + '.')
+
+
+def rational_chebyshev_grid(N, L, grid_type='L'):
+    '''
+    Rational Chebyshev grid. Defined by y = L(1+x)/(1-x)
+
+    Parameters
+    ----------
+    N : int
+        Order of the grid.
+    L : float
+        The scaling parameter
+    grid_type : character, optional
+        One of 'L' for Lobatto, 'R' for Radau, and 'G' for Gauss. Default is 'L'.
+
+    Returns
+    -------
+    y : N+1 array
+        The grid.
+    '''
+
+    x = chebyshev_grid(N, grid_type)
+
+    y = np.zeros_like(x)
+    if grid_type.upper() == 'L':
+        y[:-1] = L*(1 + x[:-1])/(1 - x[:-1])
+        y[-1] = L*np.inf
+    else:
+        y = L*(1 + x)/(1 - x)
+
+    return y
+
+def chebyshev_weight(N, grid_type='L'):
+    '''
+    Quadrature weights for Chebyshev polynomials.
+
+    Parameters
+    ----------
+    N : int
+        Order of the grid.
+    grid_type : character, optional
+        One of 'L' for Lobatto, 'R' for Radau, and 'G' for Gauss. Default is 'L'.
+
+    Returns
+    -------
+    w : N+1 array
+        The weights.
+    '''
+
+    if grid_type.upper() == 'L':
+        w = np.full(N+1, π/N)
+        w[[0,N]] = π/(2*N)
+        return w
+    elif grid_type.upper() == 'G':
+        return np.full(N+1, π/(N+1))
+    elif grid_type.upper() == 'R':
+        w = np.full(N+1, 2*π/(2*N+2))
+        w[0] = π/(2*N+1)
+        return w
+    else:
+        raise ValueError('Unknown grid type ' + grid_type + '.')
+
+def chebyshev_norm(N, grid_type='L'):
+    '''
+    Normalization weights for Chebyshev polynomials.
+
+    Parameters
+    ----------
+    N : int
+        Order of the grid.
+    grid_type : character, optional
+        One of 'L' for Lobatto, 'R' for Radau, and 'G' for Gauss. Default is 'L'.
+
+    Returns
+    -------
+    γ : N+1 array
+        The normalization weights.
+    '''
+
+    if grid_type.upper() == 'L':
+        γ = np.full(N+1, π/2)
+        γ[[0,N]] = π
+        return γ
+    elif grid_type.upper() == 'G':
+        γ = np.full(N+1, π/2)
+        γ[0] = π
+        return γ
+    elif grid_type.upper() == 'R':
+        γ = np.full(N+1, π/2)
+        γ[0] = π
+        return γ
+    else:
+        raise ValueError('Unknown grid type ' + grid_type + '.')
+
 
 def derivative_matrix(N, source_grid='E', target_grid='E', x1=-1, x2=1, second_derivative=False):
     r'''Compute Chebyshev differentiation matrix and grid.
@@ -285,6 +418,241 @@ def cheb(N, x1=-1, x2=1, calc_D2=False):
         D2p = D2[::-1,::-1]/beta**2
 
         return xp, Dp, D2p
+
+
+##### Bases
+def chebyshev(N, x, x1=-1, x2=1):
+    '''
+    Returns values of the Chebyshev polynomials and their first two derivatives at the points x for 0 .. N
+
+    x varies over the first axis and N varies over the second
+    '''
+
+    if np.any(x < x1) or np.any(x > x2):
+        warnings.warn('Evaluating polynomials outside their range of definition')
+
+    x = -1 + 2*(x - x1)/(x2 - x1)
+
+    n = np.atleast_2d(np.arange(N+1))
+    x = np.atleast_2d(x).T
+
+    endpoints = ((x == -1) | (x == 1)).ravel()
+
+    θ = np.arccos(x)
+    C = x
+    S = np.sqrt(1-x**2)
+
+    S[endpoints,:] = 1 # fake values to prevent overflow
+
+
+    T = np.cos(n*θ)
+    Tp = n*np.sin(n*θ)/S
+    Tpp = (x*Tp/S**2 - n**2*T/S**2)
+
+    # fix up the endpoints
+    if np.any(endpoints):
+        p = np.repeat(np.sign(x[endpoints,:]), N+1, axis=1)
+        p[0, np.mod(n.squeeze(), 2)==1] = 1
+
+        Tp[endpoints,:] = p*n**2
+
+        q = np.repeat(np.sign(x[endpoints,:]), N+1, axis=1)
+        q[0, np.mod(n.squeeze(), 2)==0] = 1
+
+        Tpp[endpoints,:] = q*n**2*(n**2-1)/3
+
+    # make sure the derivatives of the low order functions are correct
+    Tp[:, n.squeeze()==0] = 0
+    Tpp[:,n.squeeze()==0] = 0
+
+    Tp[:, n.squeeze()==1] = 1
+    Tpp[:,n.squeeze()==1] = 0
+
+    Tpp[:,n.squeeze()==2] = 4
+
+    # rescale the derivatives
+    Tp  *= 2/(x2-x1)
+    Tpp *= 4/(x2-x1)**2
+
+    return T, Tp, Tpp
+
+
+def quadratically_mapped_chebyshev(N, Δ, grid_type='G'):
+    '''
+    Chebyshev polynomials under the mapping x = ξ + 1j*Δ*(ξ**2 - 1).
+
+    Syntax: ξ, x, T, Tx, Txx = quadratically_mapped_chebyshev(N, Δ, grid_type)
+
+    Parameters
+    ----------
+    N : int
+        Order of the grid.
+    Δ : float or complex
+        Mapping parameter
+    grid_type : ['G', 'L', 'R', 'G*']
+        Type of the grid.
+
+    Output
+    ------
+    ξ : array
+        Real Chebyshev grid
+    x : array
+        Complex mapped Chebyshev grid
+    T, Tx, Txx : 2D array
+        Chebyshev polynomials and mapped derivatives
+
+    Notes
+    -----
+    x varies over the first axis and N varies over the second
+    '''
+
+    ξ = chebyshev_grid(N, grid_type=grid_type)
+    x = ξ + 1j*Δ*(ξ**2 - 1)
+
+    T, Tξ, Tξξ = chebyshev(N, ξ)
+
+    # transform the derivatives
+    xξ = 1 + 2j*Δ*ξ[:,np.newaxis]
+    xξξ = 2j*Δ
+
+    Tx  = (1/xξ)*Tξ
+    Txx = (1/xξ)**2*(Tξξ - xξξ/xξ * Tξ)
+
+    return ξ, x, T, Tx, Txx
+
+def bvp_basis(N, x, x1=-1, x2=1):
+    '''
+    Returns values of the zero-endpoint basis and their first two derivatives at the points x for 0 .. N
+    '''
+
+    # get the Chebyshev polynomials
+    T, Tp, Tpp = chebyshev(N+1, x, x1, x2)
+
+    φ   = np.zeros_like(T[:,:-2])
+    φp  = np.zeros_like(T[:,:-2])
+    φpp = np.zeros_like(T[:,:-2])
+
+    n = np.arange((N+1)//2)
+    φ[:,  2*n] = T[:,  2*n+2] - 1
+    φp[:, 2*n] = Tp[:, 2*n+2]
+    φpp[:,2*n] = Tpp[:,2*n+2]
+
+    n = np.arange(N//2)
+    φ[:,  2*n+1] = T[:,  2*n+3] + 1 - 2*(x[:,np.newaxis] - x1)/(x2 - x1)
+    φp[:, 2*n+1] = Tp[:, 2*n+3] - 2/(x2 - x1)
+    φpp[:,2*n+1] = Tpp[:,2*n+3]
+
+    return φ, φp, φpp
+
+
+
+def rational_chebyshev(N, y, L, from_x=False):
+    '''
+    Rational Chebyshev functions TLn.
+
+    Parameters
+    ----------
+    N : int
+        Maximum order of rational Chebyshev function to return.
+    y : (M,) array-like
+        The locations to evaluate the rational Chebyshev functions. If from_x == True,
+        the locations are on the original Chebyshev interval [-1, 1] and are mapped internally.
+    L : float
+        Mapping parameter; see notes.
+    from_x : bool, optional
+        Whether the evaluation locations are on the [-1, 1] grid or the [0, infinity) grid.
+
+    Output
+    ------
+    y : (M,) array
+        Mapped evaluation points. Only returned in from_x == True
+    TL, TLy, TLyy : (M, N) arrays
+        Rational Chebyshev functions and derivatives.
+
+    Notes
+    -----
+    The rational Chebyshev functions TLn(y) are defined by the map
+        TLn(y) = Tn((y-L)/(y+L))
+    where Tn are the standard Chebyshev polynomials and L can be positive or negative.
+
+    The mapping
+        x = (y-L)/(y+L)  <--> y = L(1+x)/(1-x)
+    transforms the interval x in [-1, 1] to the positive or negative half line, depending
+    on the sign of L.
+
+    Derivatives transform like
+        ∂y = (1/y') ∂x
+        ∂2y = (1/y')^2 ∂2x - (y''/y'^3) ∂x
+    '''
+    y = np.atleast_1d(y)
+
+    if from_x:
+        x = y
+        idx = x != 1
+        y = np.zeros_like(x)
+        y[idx] = L*(1+x[idx])/(1-x[idx])
+        y[~idx] = L*np.inf
+    else:
+        idx = np.isfinite(y)
+        x = np.zeros_like(y)
+
+        x[idx]  = (y[idx]-L)/(y[idx]+L)
+        x[~idx] = 1
+
+    T, Tx, Txx = chebyshev(N, x)
+
+    # transform the derivatives
+    if np.any(np.isinf(y)):
+        recip_yx = (1-x[:,np.newaxis])**2/(2*L)
+        yxx_on_yx3 = (1-x[:,np.newaxis])**3/(2*L**2)
+
+        TL = T
+        TLy = recip_yx * Tx
+        TLyy = recip_yx**2 * Txx - yxx_on_yx3 * Tx
+    else:
+        yx  = (2*L/(1-x)**2)[:,np.newaxis]
+        yxx = (4*L/(1-x)**3)[:,np.newaxis]
+
+        TL = T
+        TLy = (1/yx) * Tx
+        TLyy = (1/yx**2)*(Txx - (yxx/yx)*Tx)
+
+    if from_x:
+        return y, TL, TLy, TLyy
+    else:
+        return TL, TLy, TLyy
+
+########################
+# Transforms
+def chebyshev_transform(N, grid_type='L'):
+    '''
+    Chebyshev transform matrices.
+
+    Parameters
+    ----------
+    N : int
+        Order of the grid.
+    grid_type : character, optional
+        One of 'L' for Lobatto, 'R' for Radau, and 'G' for Gauss. Default is 'L'.
+
+    Returns
+    -------
+    C : (N+1, N+1) array
+        Transform from grid space to Chebyshev space
+    Cinv : (N+1, N+1) array
+        Transform from Chebyshev space to grid space
+    '''
+
+    x = chebyshev_grid(N, grid_type)
+    w = chebyshev_weight(N, grid_type)
+    γ = chebyshev_norm(N, grid_type)
+
+    T, _, _ = chebyshev(N, x)
+
+    C = (1/γ[:,np.newaxis]) * T.T * w[np.newaxis,:]
+    Cinv = T
+
+    return C, Cinv
 
 
 def transform(u):
