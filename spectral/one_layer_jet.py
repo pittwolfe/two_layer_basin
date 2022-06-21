@@ -1441,7 +1441,7 @@ class OneLayerJet_TL_PS(object):
         return fig
 
 
-    def plot_mode_2d(self, idx, ymax=2, Nlevel=31, NX=101):
+    def plot_mode_2d(self, idx, ymax=2, Nlevel=31, NX=101, plot_crit=True):
         if not self.have_modes:
             raise RuntimeError("Need calculate modes using the 'modes' method before plotting them!")
 
@@ -1495,16 +1495,21 @@ class OneLayerJet_TL_PS(object):
         fig.colorbar(cs, ax=ax, orientation='horizontal', pad=.025, ticks=integer_ticks(vmax, spacing=.25), location='top',
                     label='$\eta$')
 
+        ycS =  (1+self.δ)*np.log(self.c[idx].real)
+        ycN = -(1-self.δ)*np.log(self.c[idx].real)
         for ax in axs:
             ax.set_ylim(-ymax, ymax)
             ax.set_xlabel('$kx$')
             ax.set_xticks(np.arange(0, 2.1, .5)*π, labels=['$0$', '$\pi/2$', '$\pi$', '$3\pi/2$', '$2\pi$'])
+            if plot_crit:
+                ax.axhline(ycS, lw=.8, color='k', ls='--')
+                ax.axhline(ycN, lw=.8, color='k', ls='--')
 
         fig.tight_layout()
         return fig
 
 
-    def plot_mode_energetics(self, idx, ymax=2):
+    def plot_mode_energetics(self, idx, ymax=2, plot_crit=True):
         if not self.have_modes:
             raise RuntimeError("Need calculate modes using the 'modes' method before plotting them!")
 
@@ -1552,9 +1557,14 @@ class OneLayerJet_TL_PS(object):
             self.k, self.k*self.c[idx].imag, self.c[idx].real),
                 va='top', transform=ax.transAxes, bbox=dict(facecolor='w', alpha=0.75, edgecolor='.75'))
 
+        ycS =  (1+self.δ)*np.log(self.c[idx].real)
+        ycN = -(1-self.δ)*np.log(self.c[idx].real)
         for ax in axs:
             ax.grid()
             ax.set_ylim([-ymax, ymax])
+            if plot_crit:
+                ax.axhline(ycS, lw=.8, color='k', ls='--')
+                ax.axhline(ycN, lw=.8, color='k', ls='--')
 
         fig.tight_layout()
         return fig
