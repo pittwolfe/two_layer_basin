@@ -7,6 +7,7 @@ import scipy as sp
 from numpy import pi
 π = pi
 from scipy.fftpack import dct, dctn
+import warnings
 
 def grid(N, type='E', x1=-1, x2=1):
     r'''Generate a Chebyshev colocation grid.
